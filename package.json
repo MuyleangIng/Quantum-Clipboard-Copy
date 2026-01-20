@@ -20,6 +20,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "better-sqlite3": "^11.3.0",
     "react": "^18.3.1",
+    "react-colorful": "^5.6.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
@@ -54,7 +55,8 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "icon": "build/icon.icns",
       "identity": null,
-      "type": "distribution"},
+      "type": "distribution"
+    },
     "files": [
       "dist/**/*",
       "node_modules/**/*",

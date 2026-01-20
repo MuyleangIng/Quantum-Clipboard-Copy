@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { HexColorPicker, HexColorInput } from "react-colorful";
 
 type ClipKind = "text" | "image";
 type Lang = "en" | "km";
@@ -34,7 +35,7 @@ type Theme = {
   controlBg: string;
   controlBorder: string;
 
-  // ✅ NEW (HEX-only, editable)
+  // NEW
   itemText: string;
   itemMuted: string;
   controlText: string;
@@ -55,7 +56,6 @@ const DEFAULT_THEME: Theme = {
   controlBg: "#1B2130",
   controlBorder: "#2A2F3A",
 
-  // ✅ NEW
   itemText: "#EBF2FB",
   itemMuted: "#A0AFC3",
   controlText: "#EBF2FB",
@@ -109,10 +109,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     controlBg: "Control Background",
     controlBorder: "Control Border",
 
-    color: "Color",
     itemText: "Item Text",
-itemMuted: "Item Muted",
-controlText: "Control Text",
+    itemMuted: "Item Muted",
+    controlText: "Control Text",
   },
   km: {
     title: "ClipVault",
@@ -161,10 +160,9 @@ controlText: "Control Text",
     controlBg: "ពណ៌ផ្ទៃ (Controls)",
     controlBorder: "ពណ៌ស៊ុម (Controls)",
 
-    color: "ពណ៌",
     itemText: "ពណ៌អក្សរ (Item)",
-itemMuted: "ពណ៌អក្សរតូច (Item)",
-controlText: "ពណ៌អក្សរ (Controls)",
+    itemMuted: "ពណ៌អក្សរតូច (Item)",
+    controlText: "ពណ៌អក្សរ (Controls)",
   },
 };
 
@@ -209,6 +207,148 @@ function keyEventToAccelerator(e: KeyboardEvent) {
 
 type ModalKind = "none" | "tags" | "editText" | "renameImage";
 
+/** Click-outside hook (capture phase) */
+function useOutsideClick(ref: React.RefObject<HTMLElement>, onOutside: () => void, enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+
+    const onDown = (e: MouseEvent) => {
+      const el = ref.current;
+      if (!el) return;
+      if (el.contains(e.target as Node)) return;
+      onOutside();
+    };
+
+    window.addEventListener("mousedown", onDown, true);
+    return () => window.removeEventListener("mousedown", onDown, true);
+  }, [enabled, onOutside, ref]);
+}
+
+function normalizeHex(v: string) {
+  if (!v) return "#000000";
+  if (v.startsWith("#")) return v;
+  return `#${v}`;
+}
+
+/**
+ * The important part:
+ * - call onPickerOpenChange(true) when open
+ * - call onPickerOpenChange(false) when closed
+ * - stopPropagation on the popover so it never triggers window/popup close
+ */
+function ColorRowHex({
+  label,
+  value,
+  onChange,
+  onPickerOpenChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+  onPickerOpenChange?: (open: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const popRef = useRef<HTMLDivElement | null>(null);
+
+  useOutsideClick(
+    popRef,
+    () => {
+      setOpen(false);
+      onPickerOpenChange?.(false);
+    },
+    open
+  );
+
+  const color = normalizeHex(value);
+
+  return (
+    <div className="cv-row cv-nodrag" style={{ position: "relative" }}>
+      <div className="cv-label">{label}</div>
+
+      <div className="cv-nodrag" style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
+        <button
+          type="button"
+          className="cv-nodrag"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((prev) => {
+              const next = !prev;
+              onPickerOpenChange?.(next);
+              return next;
+            });
+          }}
+          style={{
+            width: 42,
+            height: 24,
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            background: color,
+            cursor: "pointer",
+          }}
+          aria-label={`Pick ${label} color`}
+        />
+
+        <HexColorInput
+          className="cv-input cv-nodrag"
+          color={color}
+          prefixed
+          onMouseDown={(e) => e.stopPropagation()}
+          onFocus={() => {
+            // optional: keep open while typing
+          }}
+          onChange={(v) => {
+            const next = normalizeHex(v);
+            onChange(next);
+          }}
+        />
+      </div>
+
+      {open && (
+        <div
+          ref={popRef}
+          className="cv-nodrag"
+          // Critical: stop events so the popup does NOT think you clicked outside / dragged window
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "calc(100% + 8px)",
+            zIndex: 9999,
+            padding: 10,
+            borderRadius: 14,
+            border: "1px solid var(--border)",
+            background: "var(--panel)",
+            boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
+          }}
+        >
+          <HexColorPicker
+            color={color}
+            onChange={(v) => {
+              onChange(normalizeHex(v));
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+            <button
+              className="cv-btn cv-nodrag"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                onPickerOpenChange?.(false);
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [items, setItems] = useState<ClipItem[]>([]);
   const [query, setQuery] = useState("");
@@ -217,7 +357,6 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutDraft, setShortcutDraft] = useState("CommandOrControl+Shift+V");
   const [shortcutMsg, setShortcutMsg] = useState("");
-
   const [recording, setRecording] = useState(false);
 
   const [theme, setTheme] = useState<Theme>(DEFAULT_THEME);
@@ -227,6 +366,9 @@ export default function App() {
   const [toast, setToast] = useState("");
   const toastTimer = useRef<number | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // This is the only flag you need for blocking ESC close:
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
 
   const [modal, setModal] = useState<ModalKind>("none");
   const [modalItem, setModalItem] = useState<ClipItem | null>(null);
@@ -245,27 +387,7 @@ export default function App() {
     setItems(h as any);
     setSelectedIndex(0);
   }
-function ColorRow({
-  label,
-  value,
-  onChange
-}: {
-  label: string;
-  value: string;
-  onChange: (next: string) => void;
-}) {
-  return (
-    <div className="cv-color-row">
-      <div className="cv-label">{label}</div>
-      <input
-        className="cv-nodrag"
-        type="color"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
+
   useEffect(() => {
     window.clipvault.getSettings().then((s) => setShortcutDraft(s.popupShortcut));
     window.clipvault.getTheme().then((th) => setTheme({ ...DEFAULT_THEME, ...th }));
@@ -284,6 +406,7 @@ function ColorRow({
       setShortcutMsg("");
       setModal("none");
       setModalItem(null);
+      setColorPickerOpen(false);
       setTimeout(() => inputRef.current?.focus(), 40);
     });
 
@@ -292,9 +415,10 @@ function ColorRow({
         e.preventDefault();
         e.stopPropagation();
 
+        // recording: do not close while picker open
         if (e.key === "Escape") {
-          setRecording(false);
-          setShortcutMsg(t("cancel"));
+          if (colorPickerOpen) return;
+          await window.clipvault.hidePopup();
           return;
         }
 
@@ -322,6 +446,7 @@ function ColorRow({
 
       if (e.key === "Escape") {
         e.preventDefault();
+        if (colorPickerOpen) return; // IMPORTANT
         await window.clipvault.hidePopup();
         return;
       }
@@ -358,7 +483,7 @@ function ColorRow({
       window.removeEventListener("keydown", onKeyDown);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen, selectedIndex, query, recording, modal, lang]);
+  }, [settingsOpen, selectedIndex, query, recording, modal, lang, colorPickerOpen]);
 
   useEffect(() => {
     const tt = window.setTimeout(() => refresh(query).catch(() => undefined), 120);
@@ -376,12 +501,6 @@ function ColorRow({
     ["--muted" as any]: theme.muted,
     ["--accent" as any]: theme.accent,
     ["--danger" as any]: theme.danger,
-
-    // NEW: usable in CSS if you want
-    ["--itemBorder" as any]: theme.itemBorder,
-    ["--itemBg" as any]: theme.itemBg,
-    ["--controlBg" as any]: theme.controlBg,
-    ["--controlBorder" as any]: theme.controlBorder,
   };
 
   async function copyItem(item: ClipItem) {
@@ -449,16 +568,14 @@ function ColorRow({
 
   async function saveEditText() {
     if (!modalItem) return;
-    const text = editDraft ?? "";
-    await window.clipvault.updateClipText(modalItem.id, text);
+    await window.clipvault.updateClipText(modalItem.id, editDraft ?? "");
     showToast(t("save"));
     closeModal();
   }
 
   async function saveRenameImage() {
     if (!modalItem) return;
-    const name = (renameDraft ?? "").trim();
-    await window.clipvault.renameClip(modalItem.id, name);
+    await window.clipvault.renameClip(modalItem.id, (renameDraft ?? "").trim());
     showToast(t("save"));
     closeModal();
   }
@@ -492,8 +609,7 @@ function ColorRow({
         <div>
           <div className="cv-title">{t("title")}</div>
           <div className="cv-subtitle">
-            Search <span className="cv-kbd">⌘K</span> • Open{" "}
-            <span className="cv-kbd">{shortcutDraft}</span>
+            Search <span className="cv-kbd">⌘K</span> • Open <span className="cv-kbd">{shortcutDraft}</span>
           </div>
         </div>
 
@@ -520,133 +636,88 @@ function ColorRow({
 
       {settingsOpen && (
         <div className="cv-panel cv-nodrag">
-  <div className="cv-panel-title">{t("settings")}</div>
+          <div className="cv-panel-title">{t("settings")}</div>
 
-  {/* ===== Shortcut ===== */}
-  <div className="cv-section">
-    <div className="cv-section-title">{t("shortcut")}</div>
+          {/* ===== Shortcut ===== */}
+          <div className="cv-section">
+            <div className="cv-section-title">{t("shortcut")}</div>
 
-    <div className="cv-row">
-      <input className="cv-input cv-nodrag" value={shortcutDraft} readOnly />
-      <button
-        className="cv-btn cv-nodrag"
-        onClick={() => {
-          setRecording(true);
-          setShortcutMsg(t("pressKeys"));
-        }}
-      >
-        {recording ? t("recording") : t("record")}
-      </button>
-    </div>
+            <div className="cv-row">
+              <input className="cv-input cv-nodrag" value={shortcutDraft} readOnly />
+              <button
+                className="cv-btn cv-nodrag"
+                onClick={() => {
+                  setRecording(true);
+                  setShortcutMsg(t("pressKeys"));
+                }}
+              >
+                {recording ? t("recording") : t("record")}
+              </button>
+            </div>
 
-    <div className="cv-row">
-      <button className="cv-btn cv-nodrag" onClick={saveShortcut}>
-        {t("saveShortcut")}
-      </button>
-      <div className="cv-muted">{shortcutMsg}</div>
-    </div>
-  </div>
+            <div className="cv-row">
+              <button className="cv-btn cv-nodrag" onClick={saveShortcut}>
+                {t("saveShortcut")}
+              </button>
+              <div className="cv-muted">{shortcutMsg}</div>
+            </div>
+          </div>
 
-  {/* ===== Language ===== */}
-  <div className="cv-section">
-    <div className="cv-section-title">{t("language")}</div>
+          {/* ===== Language ===== */}
+          <div className="cv-section">
+            <div className="cv-section-title">{t("language")}</div>
 
-    <div className="cv-row">
-      <select
-        className="cv-input cv-nodrag"
-        value={lang}
-        onChange={(e) => onChangeLang(e.target.value as Lang)}
-      >
-        <option value="en">English</option>
-        <option value="km">Khmer (ខ្មែរ)</option>
-      </select>
-    </div>
-  </div>
+            <div className="cv-row">
+              <select className="cv-input cv-nodrag" value={lang} onChange={(e) => onChangeLang(e.target.value as Lang)}>
+                <option value="en">English</option>
+                <option value="km">Khmer (ខ្មែរ)</option>
+              </select>
+            </div>
+          </div>
 
-  {/* ===== Theme ===== */}
-  <div className="cv-section">
-    <div className="cv-section-title">{t("theme")}</div>
-    <div className="cv-muted" style={{ marginBottom: 6 }}>
-      {t("pickColors")}
-    </div>
+          {/* ===== Theme ===== */}
+          <div className="cv-section">
+            <div className="cv-section-title">{t("theme")}</div>
+            <div className="cv-muted" style={{ marginBottom: 6 }}>
+              {t("pickColors")}
+            </div>
 
-    <div className="cv-grid">
-      <ColorRow
-        label={t("accent")}
-        value={theme.accent}
-        onChange={(v) => saveTheme({ ...theme, accent: v })}
-      />
-      <ColorRow
-        label={t("danger")}
-        value={theme.danger}
-        onChange={(v) => saveTheme({ ...theme, danger: v })}
-      />
-      <ColorRow
-        label={t("background")}
-        value={theme.bg}
-        onChange={(v) => saveTheme({ ...theme, bg: v })}
-      />
-    </div>
-  </div>
+            <div className="cv-grid">
+              <ColorRowHex label={t("accent")} value={theme.accent} onChange={(v) => saveTheme({ ...theme, accent: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("danger")} value={theme.danger} onChange={(v) => saveTheme({ ...theme, danger: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("background")} value={theme.bg} onChange={(v) => saveTheme({ ...theme, bg: v })} onPickerOpenChange={setColorPickerOpen} />
+            </div>
+          </div>
 
-  {/* ===== Item Cards ===== */}
-  <div className="cv-section">
-    <div className="cv-section-title">{t("itemCards") ?? "Item Cards"}</div>
+          {/* ===== Item Cards ===== */}
+          <div className="cv-section">
+            <div className="cv-section-title">Item Cards</div>
 
-    <div className="cv-grid">
-      <ColorRow
-        label={t("itemBorder")}
-        value={theme.itemBorder}
-        onChange={(v) => saveTheme({ ...theme, itemBorder: v })}
-      />
-      <ColorRow
-        label={t("itemBg")}
-        value={theme.itemBg}
-        onChange={(v) => saveTheme({ ...theme, itemBg: v })}
-      />
-      <ColorRow
-        label={t("itemText")}
-        value={theme.itemText}
-        onChange={(v) => saveTheme({ ...theme, itemText: v })}
-      />
-      <ColorRow
-        label={t("itemMuted")}
-        value={theme.itemMuted}
-        onChange={(v) => saveTheme({ ...theme, itemMuted: v })}
-      />
-    </div>
-  </div>
+            <div className="cv-grid">
+              <ColorRowHex label={t("itemBorder")} value={theme.itemBorder} onChange={(v) => saveTheme({ ...theme, itemBorder: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("itemBg")} value={theme.itemBg} onChange={(v) => saveTheme({ ...theme, itemBg: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("itemText")} value={theme.itemText} onChange={(v) => saveTheme({ ...theme, itemText: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("itemMuted")} value={theme.itemMuted} onChange={(v) => saveTheme({ ...theme, itemMuted: v })} onPickerOpenChange={setColorPickerOpen} />
+            </div>
+          </div>
 
-  {/* ===== Controls ===== */}
-  <div className="cv-section">
-    <div className="cv-section-title">{t("controls") ?? "Controls"}</div>
+          {/* ===== Controls ===== */}
+          <div className="cv-section">
+            <div className="cv-section-title">Controls</div>
 
-    <div className="cv-grid">
-      <ColorRow
-        label={t("controlBg")}
-        value={theme.controlBg}
-        onChange={(v) => saveTheme({ ...theme, controlBg: v })}
-      />
-      <ColorRow
-        label={t("controlBorder")}
-        value={theme.controlBorder}
-        onChange={(v) => saveTheme({ ...theme, controlBorder: v })}
-      />
-      <ColorRow
-        label={t("controlText")}
-        value={theme.controlText}
-        onChange={(v) => saveTheme({ ...theme, controlText: v })}
-      />
-    </div>
-  </div>
+            <div className="cv-grid">
+              <ColorRowHex label={t("controlBg")} value={theme.controlBg} onChange={(v) => saveTheme({ ...theme, controlBg: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("controlBorder")} value={theme.controlBorder} onChange={(v) => saveTheme({ ...theme, controlBorder: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex label={t("controlText")} value={theme.controlText} onChange={(v) => saveTheme({ ...theme, controlText: v })} onPickerOpenChange={setColorPickerOpen} />
+            </div>
+          </div>
 
-  {/* ===== Reset ===== */}
-  <div className="cv-row" style={{ marginTop: 10 }}>
-    <button className="cv-btn cv-nodrag" onClick={() => saveTheme(DEFAULT_THEME)}>
-      {t("resetTheme")}
-    </button>
-  </div>
-</div>
+          <div className="cv-row" style={{ marginTop: 10 }}>
+            <button className="cv-btn cv-nodrag" onClick={() => saveTheme(DEFAULT_THEME)}>
+              {t("resetTheme")}
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="cv-list cv-nodrag">
@@ -654,7 +725,6 @@ function ColorRow({
           <div className="cv-empty">{t("noItems")}</div>
         ) : (
           visible.map((item, idx) => {
-            // Use per-item if present, else fall back to theme defaults
             const borderColor = item.borderColor ?? theme.itemBorder;
             const bgColor = item.bgColor ?? theme.itemBg;
 
@@ -669,24 +739,27 @@ function ColorRow({
                   item.imageDataUrl?.startsWith("data:image/") ? (
                     <div>
                       <img className="cv-img cv-nodrag" src={item.imageDataUrl} alt="clipboard" />
-                      <div className="cv-item-text" style={{ marginTop: 8 }}>
+                      <div className="cv-item-text" style={{ marginTop: 8, color: theme.itemText }}>
                         {item.imageName ?? ""}
                       </div>
                     </div>
                   ) : (
-                    <div className="cv-item-text">{t("imageInvalid")}</div>
+                    <div className="cv-item-text" style={{ color: theme.itemText }}>
+                      {t("imageInvalid")}
+                    </div>
                   )
                 ) : (
-                 <div className="cv-item-text" style={{ color: theme.itemText }}>
-  {item.text ?? ""}
-</div>
+                  <div className="cv-item-text" style={{ color: theme.itemText }}>
+                    {item.text ?? ""}
+                  </div>
                 )}
 
                 <div className="cv-item-meta">
                   <div className="cv-meta-left">
-<div className="cv-muted" style={{ marginBottom: 6, color: theme.itemMuted }}>                      
-  {t("created")}: {formatDateTime(item.createdAt)}
+                    <div className="cv-muted" style={{ marginBottom: 6, color: theme.itemMuted }}>
+                      {t("created")}: {formatDateTime(item.createdAt)}
                     </div>
+
                     {item.pinned ? <span className="cv-badge">{t("pinned")}</span> : null}
                     {(item.tags ?? []).map((tg) => (
                       <span key={tg} className="cv-tag">
@@ -718,8 +791,6 @@ function ColorRow({
                       </button>
                     )}
 
-                    
-
                     <button className="cv-icon danger cv-nodrag" onClick={() => onDelete(item)}>
                       {t("delete")}
                     </button>
@@ -738,6 +809,7 @@ function ColorRow({
 
       {toast && <div className="cv-toast">{toast}</div>}
 
+      {/* ---------- Modals ---------- */}
       {modal !== "none" && (
         <div className="cv-modal-backdrop cv-nodrag" onMouseDown={closeModal}>
           <div className="cv-modal cv-nodrag" onMouseDown={(e) => e.stopPropagation()}>
