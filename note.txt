@@ -1,0 +1,101 @@
+Here are clean, professional commit and release messages you can use directly. I’ve written them in a style that fits open-source + Homebrew/GitHub releases.
+
+⸻
+
+✅ Commit Message (recommended)
+
+Short commit (safe default):
+
+feat(ui): add advanced theme customization for clipboard items and controls
+
+Detailed commit (better for main branch):
+
+feat(ui): add advanced theme customization for clipboard items and controls
+
+- Add global item card styling (border, background)
+- Add per-theme text and muted text colors
+- Add control block background, border, and text colors
+- Improve Settings panel layout with categorized sections
+- Support live color updates without restart
+- Improve Khmer (km) and English (en) translations
+
+
+⸻
+
+🏷️ Release Tag Message (v0.1.1)
+
+v0.1.1 – Advanced Theme Customization & UI Improvements
+
+
+⸻
+
+📦 GitHub Release Notes (v0.1.1)
+
+You can paste this directly into GitHub → Releases.
+
+⸻
+
+Quantum Clipboard v0.1.1 (Development Release)
+
+This release focuses on deep UI customization, better theming, and improved usability for power users.
+
+✨ New Features
+	•	Global clipboard item styling
+	•	Item border color
+	•	Item background color
+	•	Text color customization
+	•	Item text color
+	•	Muted/secondary text color
+	•	Control & action styling
+	•	Control background color
+	•	Control border color
+	•	Control text color
+	•	Live theme updates (no restart required)
+	•	Fully categorized Settings panel (Shortcut / Language / Theme / Items / Controls)
+	•	Improved bilingual support (English 🇬🇧 / Khmer 🇰🇭)
+
+🎨 UI & UX Improvements
+	•	Cleaner Settings layout with visual grouping
+	•	Smoother color changes without flicker
+	•	Consistent styling across all clipboard cards
+	•	Better contrast handling for dark themes
+
+🛠 Technical Notes
+	•	Theme values persisted via backend settings
+	•	UI updates applied instantly in renderer
+	•	Backward-compatible with existing theme configs
+
+📦 Installation
+Available via Homebrew (custom tap):
+
+brew tap muyleanging/quantum-clipboard
+brew install --cask quantum-clipboard
+
+Note: This is a development build and is not notarized.
+
+If macOS blocks the app on first launch:
+
+xattr -dr com.apple.quarantine "/Applications/Quantum Clipboard.app"
+
+
+⸻
+
+🧾 Optional: CHANGELOG.md Entry
+
+## v0.1.1
+- Added advanced theme customization for clipboard items
+- Added text and muted text color controls
+- Added control panel styling options
+- Improved Settings UI layout
+- Improved English and Khmer translations
+
+
+⸻
+
+If you want, I can also:
+	•	Generate release screenshots captions
+	•	Write a Homebrew announcement note
+	•	Create a README “Theme Customization” section
+	•	Prepare v0.1.2 roadmap text
+
+Just tell me 👍
