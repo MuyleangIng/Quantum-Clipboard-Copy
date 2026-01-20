@@ -38,6 +38,7 @@ declare global {
       clearAll: () => Promise<boolean>;
       togglePin: (id: string) => Promise<boolean>;
       setTags: (id: string, tags: string[]) => Promise<boolean>;
+    setColorPickerOpen?: (open: boolean) => void;
 
       updateClipText: (id: string, text: string) => Promise<boolean>;
       renameClip: (id: string, name: string) => Promise<boolean>;

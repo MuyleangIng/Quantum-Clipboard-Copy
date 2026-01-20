@@ -78,7 +78,11 @@ contextBridge.exposeInMainWorld("clipvault", {
   setClipBorderColor: (id: string, color: string) =>
   ipcRenderer.invoke("set-clip-border-color", { id, color }) as Promise<boolean>,
 
-setClipBgColor: (id: string, color: string) =>
+  // ✅ NEW: tell main process we are using native color picker
+  setColorPickerOpen: (open: boolean) => {
+    ipcRenderer.send("cv:color-picker-open", !!open);
+  },
+  setClipBgColor: (id: string, color: string) =>
   ipcRenderer.invoke("set-clip-bg-color", { id, color }) as Promise<boolean>,
   onPopupOpened: (cb: () => void) => {
     const handler = () => cb();

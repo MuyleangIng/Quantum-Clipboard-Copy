@@ -294,6 +294,7 @@ function getHistory(query: string): ClipItem[] {
     return text.includes(q) || tags.includes(q) || name.includes(q);
   });
 }
+let colorPickerOpen = false;
 
 // ---------- Window / tray ----------
 function createWindow() {
@@ -317,6 +318,7 @@ function createWindow() {
 
   const devUrl = "http://localhost:5173";
   const prodHtml = path.join(app.getAppPath(), "dist/renderer/index.html");
+  // ✅ IMPORTANT: only hide on blur if NOT picking a color
 
   if (!app.isPackaged) {
     win.loadURL(devUrl);
@@ -558,6 +560,10 @@ function setupIPC() {
     setLang(lang === "km" ? "km" : "en");
     return true;
   });
+  ipcMain.on("cv:color-picker-open", (_evt, open: boolean) => {
+  colorPickerOpen = !!open;
+});
+  // ✅ This is the key fi
 }
 
 // ---------- App lifecycle ----------
