@@ -1,3 +1,4 @@
+// src/main/index.ts
 import {
   app,
   BrowserWindow,
@@ -12,14 +13,15 @@ import {
 } from "electron";
 import * as path from "node:path";
 
-// better-sqlite3 (CommonJS)
-const Database = require("better-sqlite3") as typeof import("better-sqlite3");
+// better-sqlite3 (CommonJS require)
+const BetterSqlite3 = require("better-sqlite3") as typeof import("better-sqlite3");
 
 type ClipItem = {
   id: string;
   kind: "text" | "image";
   text?: string;
   imageDataUrl?: string;
+  imageName?: string;
   createdAt: number;
   pinned: 0 | 1;
   tags: string[];
@@ -49,20 +51,16 @@ const DEFAULT_THEME: Theme = {
 
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
-
-let db!: import("better-sqlite3").Database;
+let db: import("better-sqlite3").Database;
 
 // ---------------- Single instance lock (MUST be near top) ----------------
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 }
-// Do NOT call showPopupNearCursor here (functions not defined yet).
+
 app.on("second-instance", () => {
-  // If user launches again, just show existing popup (no second poller)
-  if (win) {
-    showPopupNearCursor();
-  }
+  if (win) showPopupNearCursor();
 });
 
 // ---------------- Paths / resources ----------------
@@ -71,17 +69,42 @@ function userDataPath(...p: string[]) {
 }
 
 function getResourcePath(...p: string[]) {
-  // Packaged resources live under process.resourcesPath
-  return app.isPackaged
-    ? path.join(process.resourcesPath, ...p)
-    : path.join(app.getAppPath(), ...p);
+  return app.isPackaged ? path.join(process.resourcesPath, ...p) : path.join(app.getAppPath(), ...p);
 }
 
-// ---------------- DB ----------------
+// ---------------- DB helpers ----------------
+function safeJson<T>(s: string, fallback: T): T {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function rowToClip(r: any): ClipItem {
+  return {
+    id: r.id,
+    kind: r.kind,
+    text: r.text ?? undefined,
+    imageDataUrl: r.imageDataUrl ?? undefined,
+    imageName: r.imageName ?? undefined,
+    createdAt: r.createdAt,
+    pinned: r.pinned,
+    tags: safeJson(r.tagsJson, [])
+  };
+}
+
+function ensureColumn(table: string, column: string, ddl: string) {
+  // IMPORTANT: db must exist before this runs (we only call it inside dbInit)
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(ddl);
+}
+
 function dbInit() {
   const dbFile = userDataPath("clipvault.sqlite");
-  db = new Database(dbFile);
+  db = new BetterSqlite3(dbFile);
 
+  // Base schema
   db.exec(`
     CREATE TABLE IF NOT EXISTS clips (
       id TEXT PRIMARY KEY,
@@ -99,101 +122,17 @@ function dbInit() {
     );
   `);
 
-  // default shortcut
+  // Migrations
+  ensureColumn("clips", "imageName", `ALTER TABLE clips ADD COLUMN imageName TEXT;`);
+
+  // Defaults
   if (!db.prepare("SELECT 1 FROM settings WHERE key = ?").get("popupShortcut")) {
     db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)").run("popupShortcut", "CommandOrControl+Shift+V");
   }
 
-  // default theme
   if (!db.prepare("SELECT 1 FROM settings WHERE key = ?").get("theme")) {
     db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)").run("theme", JSON.stringify(DEFAULT_THEME));
   }
-}
-
-function nowId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function safeJson<T>(s: string, fallback: T): T {
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function rowToClip(r: any): ClipItem {
-  return {
-    id: r.id,
-    kind: r.kind,
-    text: r.text ?? undefined,
-    imageDataUrl: r.imageDataUrl ?? undefined,
-    createdAt: r.createdAt,
-    pinned: r.pinned,
-    tags: safeJson(r.tagsJson, [])
-  };
-}
-
-function insertClip(item: { kind: "text"; text: string } | { kind: "image"; imageDataUrl: string }) {
-  const id = nowId();
-  const createdAt = Date.now();
-
-  if (item.kind === "text") {
-    const text = (item.text ?? "").trim();
-    if (!text) return;
-
-    // de-dup text
-    const existing = db
-      .prepare("SELECT id FROM clips WHERE kind='text' AND text=?")
-      .get(text) as { id: string } | undefined;
-    if (existing?.id) db.prepare("DELETE FROM clips WHERE id=?").run(existing.id);
-
-    db.prepare(
-      "INSERT INTO clips(id, kind, text, imageDataUrl, createdAt, pinned, tagsJson) VALUES(?, 'text', ?, NULL, ?, 0, '[]')"
-    ).run(id, text, createdAt);
-    return;
-  }
-
-  // image guards
-  const dataUrl = item.imageDataUrl ?? "";
-  if (!dataUrl.startsWith("data:image/png;base64,")) return;
-  if (dataUrl.length < 3000) return; // too small -> likely invalid
-
-  // de-dup image by prefix+length
-  const sig = dataUrl.slice(0, 120) + ":" + dataUrl.length;
-  const recent = db
-    .prepare("SELECT id, imageDataUrl FROM clips WHERE kind='image' ORDER BY createdAt DESC LIMIT 40")
-    .all() as { id: string; imageDataUrl: string }[];
-
-  for (const e of recent) {
-    const esig = (e.imageDataUrl?.slice(0, 120) ?? "") + ":" + (e.imageDataUrl?.length ?? 0);
-    if (esig === sig) {
-      db.prepare("DELETE FROM clips WHERE id=?").run(e.id);
-      break;
-    }
-  }
-
-  db.prepare(
-    "INSERT INTO clips(id, kind, text, imageDataUrl, createdAt, pinned, tagsJson) VALUES(?, 'image', NULL, ?, ?, 0, '[]')"
-  ).run(id, dataUrl, createdAt);
-}
-
-function getHistory(query: string): ClipItem[] {
-  const q = query.trim().toLowerCase();
-
-  const rows = db
-    .prepare("SELECT * FROM clips ORDER BY pinned DESC, createdAt DESC LIMIT 300")
-    .all();
-
-  const items = rows.map(rowToClip);
-
-  if (!q) return items;
-
-  return items.filter((it: ClipItem) => {
-    const tags = (it.tags ?? []).join(",").toLowerCase();
-    const text = (it.text ?? "").toLowerCase();
-    return text.includes(q) || tags.includes(q) || (it.kind === "image" && q === "image");
-  });
 }
 
 function getSettings(): Settings {
@@ -202,8 +141,10 @@ function getSettings(): Settings {
 }
 
 function setSetting(key: string, value: string) {
-  db.prepare("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-    .run(key, value);
+  db.prepare("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(
+    key,
+    value
+  );
 }
 
 function getTheme(): Theme {
@@ -214,6 +155,96 @@ function getTheme(): Theme {
 
 function setTheme(theme: Theme) {
   setSetting("theme", JSON.stringify({ ...DEFAULT_THEME, ...theme }));
+}
+
+// ---------------- Clip operations ----------------
+function nowId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function defaultImageName() {
+  const d = new Date();
+  return `Image-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}-${pad2(
+    d.getMinutes()
+  )}-${pad2(d.getSeconds())}.png`;
+}
+
+function tryGetClipboardFileName(): string | undefined {
+  try {
+    const buf = clipboard.readBuffer("public.file-url");
+    if (!buf?.length) return undefined;
+
+    const s = buf.toString("utf8").trim();
+    const first = s.split("\n")[0].trim();
+    const decoded = decodeURIComponent(first.replace(/^file:\/\//, ""));
+    const base = path.basename(decoded);
+    return base || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function insertTextClip(textRaw: string) {
+  const text = (textRaw ?? "").trim();
+  if (!text) return;
+
+  // de-dup by text
+  const existing = db.prepare("SELECT id FROM clips WHERE kind='text' AND text=?").get(text) as
+    | { id: string }
+    | undefined;
+  if (existing?.id) db.prepare("DELETE FROM clips WHERE id=?").run(existing.id);
+
+  db.prepare(
+    "INSERT INTO clips(id, kind, text, imageDataUrl, imageName, createdAt, pinned, tagsJson) VALUES(?, 'text', ?, NULL, NULL, ?, 0, '[]')"
+  ).run(nowId(), text, Date.now());
+}
+
+function insertImageClip(png: Buffer, imageName?: string) {
+  if (!png?.length) return;
+
+  const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
+  if (dataUrl.length < 2000) return;
+
+  const name = (imageName ?? "").trim() || defaultImageName();
+
+  // de-dup by prefix+length (cheap)
+  const sig = dataUrl.slice(0, 100) + ":" + dataUrl.length;
+  const recent = db
+    .prepare("SELECT id, imageDataUrl FROM clips WHERE kind='image' ORDER BY createdAt DESC LIMIT 30")
+    .all() as { id: string; imageDataUrl: string }[];
+
+  for (const e of recent) {
+    const esig = (e.imageDataUrl?.slice(0, 100) ?? "") + ":" + (e.imageDataUrl?.length ?? 0);
+    if (esig === sig) {
+      db.prepare("DELETE FROM clips WHERE id=?").run(e.id);
+      break;
+    }
+  }
+
+  db.prepare(
+    "INSERT INTO clips(id, kind, text, imageDataUrl, imageName, createdAt, pinned, tagsJson) VALUES(?, 'image', NULL, ?, ?, ?, 0, '[]')"
+  ).run(nowId(), dataUrl, name, Date.now());
+}
+
+function getHistory(query: string): ClipItem[] {
+  const q = (query ?? "").trim().toLowerCase();
+
+  const rows = db.prepare("SELECT * FROM clips ORDER BY pinned DESC, createdAt DESC LIMIT 300").all();
+  const items = rows.map(rowToClip);
+
+  if (!q) return items;
+
+  return items.filter((it) => {
+    if (q === "image") return it.kind === "image";
+    const tags = (it.tags ?? []).join(",").toLowerCase();
+    const text = (it.text ?? "").toLowerCase();
+    const name = (it.imageName ?? "").toLowerCase();
+    return text.includes(q) || tags.includes(q) || name.includes(q);
+  });
 }
 
 // ---------------- Window / Tray ----------------
@@ -300,56 +331,48 @@ function createTray() {
   tray.on("click", () => showPopupNearCursor());
 }
 
-// ---------------- Clipboard watch (FIXED) ----------------
-// The important fix: only create a new item when the clipboard *fingerprint* changes.
-// This prevents "text copy" falling through into stale image inserts.
+// ---------------- Clipboard polling (stable) ----------------
+let lastText = "";
+let lastImageSig = "";
+let lastSeenTick = 0;
 
-let lastFingerprint = "";
-
-function fingerprintClipboard() {
-  const text = clipboard.readText().trim();
-
-  // If there is text, prefer text fingerprint
-  if (text) return `t:${text}`;
-
-  const img = clipboard.readImage();
-  if (!img.isEmpty()) {
-    const png = img.toPNG();
-    if (png.length < 2048) return ""; // ignore tiny/stale icons
-    // Stable fingerprint based on size + head bytes
-    const head = png.subarray(0, Math.min(64, png.length)).toString("hex");
-    return `i:${head}:${png.length}`;
-  }
-
-  return "";
+function sigFromPng(png: Buffer) {
+  if (!png?.length) return "";
+  const head = png.subarray(0, Math.min(64, png.length)).toString("hex");
+  return `${head}:${png.length}`;
 }
 
 function pollClipboard() {
   setInterval(() => {
-    const fp = fingerprintClipboard();
-    if (!fp) return;
-    if (fp === lastFingerprint) return;
+    const tick = Date.now();
+    if (tick - lastSeenTick < 200) return;
+    lastSeenTick = tick;
 
-    lastFingerprint = fp;
-
-    // Insert based on fingerprint type
-    if (fp.startsWith("t:")) {
-      const text = fp.slice(2);
-      insertClip({ kind: "text", text });
-      win?.webContents.send("history-updated", getHistory(""));
+    // 1) Text first
+    const text = clipboard.readText();
+    const trimmed = text.trim();
+    if (trimmed && trimmed !== lastText) {
+      lastText = trimmed;
+      insertTextClip(trimmed);
+      win?.webContents.send("history-updated");
       return;
     }
 
-    // image
+    // 2) Image second
     const img = clipboard.readImage();
-    if (!img.isEmpty()) {
-      const png = img.toPNG();
-      if (png.length < 2048) return;
+    if (img.isEmpty()) return;
 
-      const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
-      insertClip({ kind: "image", imageDataUrl: dataUrl });
-      win?.webContents.send("history-updated", getHistory(""));
-    }
+    const png = img.toPNG();
+    // ignore tiny "ghost" icons
+    if (png.length < 8192) return;
+
+    const sig = sigFromPng(png);
+    if (!sig || sig === lastImageSig) return;
+    lastImageSig = sig;
+
+    const fileName = tryGetClipboardFileName() ?? defaultImageName();
+    insertImageClip(png, fileName);
+    win?.webContents.send("history-updated");
   }, 450);
 }
 
@@ -388,15 +411,29 @@ function setupIPC() {
     }
   );
 
+  ipcMain.handle("update-clip-text", async (_e, payload: { id: string; text: string }) => {
+    const text = (payload.text ?? "").trim();
+    db.prepare("UPDATE clips SET text=? WHERE id=? AND kind='text'").run(text, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
+
+  ipcMain.handle("rename-clip", async (_e, payload: { id: string; name: string }) => {
+    const name = (payload.name ?? "").trim();
+    db.prepare("UPDATE clips SET imageName=? WHERE id=? AND kind='image'").run(name, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
+
   ipcMain.handle("delete-clip", async (_e, id: string) => {
     db.prepare("DELETE FROM clips WHERE id=?").run(id);
-    win?.webContents.send("history-updated", getHistory(""));
+    win?.webContents.send("history-updated");
     return true;
   });
 
   ipcMain.handle("clear-all", async () => {
     db.prepare("DELETE FROM clips").run();
-    win?.webContents.send("history-updated", getHistory(""));
+    win?.webContents.send("history-updated");
     return true;
   });
 
@@ -404,14 +441,14 @@ function setupIPC() {
     const r = db.prepare("SELECT pinned FROM clips WHERE id=?").get(id) as { pinned: number } | undefined;
     const next = r?.pinned ? 0 : 1;
     db.prepare("UPDATE clips SET pinned=? WHERE id=?").run(next, id);
-    win?.webContents.send("history-updated", getHistory(""));
+    win?.webContents.send("history-updated");
     return true;
   });
 
   ipcMain.handle("set-tags", async (_e, payload: { id: string; tags: string[] }) => {
     const tags = Array.isArray(payload.tags) ? payload.tags : [];
     db.prepare("UPDATE clips SET tagsJson=? WHERE id=?").run(JSON.stringify(tags), payload.id);
-    win?.webContents.send("history-updated", getHistory(""));
+    win?.webContents.send("history-updated");
     return true;
   });
 
