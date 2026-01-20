@@ -1,4 +1,3 @@
-// src/main/index.ts
 import {
   app,
   BrowserWindow,
@@ -13,18 +12,22 @@ import {
 } from "electron";
 import * as path from "node:path";
 
-// better-sqlite3 (CommonJS require)
 const BetterSqlite3 = require("better-sqlite3") as typeof import("better-sqlite3");
+
+type ClipKind = "text" | "image";
 
 type ClipItem = {
   id: string;
-  kind: "text" | "image";
+  kind: ClipKind;
   text?: string;
   imageDataUrl?: string;
   imageName?: string;
+  color?: string;
   createdAt: number;
   pinned: 0 | 1;
   tags: string[];
+  borderColor?: string;
+bgColor?: string;
 };
 
 type Settings = { popupShortcut: string };
@@ -39,6 +42,8 @@ type Theme = {
   accent: string;
 };
 
+type Lang = "en" | "km";
+
 const DEFAULT_THEME: Theme = {
   bg: "#0f1115",
   panel: "#151922",
@@ -51,28 +56,32 @@ const DEFAULT_THEME: Theme = {
 
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let db: import("better-sqlite3").Database;
 
-// ---------------- Single instance lock (MUST be near top) ----------------
+let db!: import("better-sqlite3").Database;
+
+// ---------- Single instance lock ----------
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (win) showPopupNearCursor();
+  });
 }
 
-app.on("second-instance", () => {
-  if (win) showPopupNearCursor();
-});
-
-// ---------------- Paths / resources ----------------
+// ---------- Paths ----------
 function userDataPath(...p: string[]) {
   return path.join(app.getPath("userData"), ...p);
 }
 
 function getResourcePath(...p: string[]) {
-  return app.isPackaged ? path.join(process.resourcesPath, ...p) : path.join(app.getAppPath(), ...p);
+  // Packaged resources live under process.resourcesPath
+  return app.isPackaged
+    ? path.join(process.resourcesPath, ...p)
+    : path.join(app.getAppPath(), ...p);
 }
 
-// ---------------- DB helpers ----------------
+// ---------- JSON helper ----------
 function safeJson<T>(s: string, fallback: T): T {
   try {
     return JSON.parse(s) as T;
@@ -81,21 +90,8 @@ function safeJson<T>(s: string, fallback: T): T {
   }
 }
 
-function rowToClip(r: any): ClipItem {
-  return {
-    id: r.id,
-    kind: r.kind,
-    text: r.text ?? undefined,
-    imageDataUrl: r.imageDataUrl ?? undefined,
-    imageName: r.imageName ?? undefined,
-    createdAt: r.createdAt,
-    pinned: r.pinned,
-    tags: safeJson(r.tagsJson, [])
-  };
-}
-
+// ---------- DB migrations ----------
 function ensureColumn(table: string, column: string, ddl: string) {
-  // IMPORTANT: db must exist before this runs (we only call it inside dbInit)
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!cols.some((c) => c.name === column)) db.exec(ddl);
 }
@@ -104,7 +100,6 @@ function dbInit() {
   const dbFile = userDataPath("clipvault.sqlite");
   db = new BetterSqlite3(dbFile);
 
-  // Base schema
   db.exec(`
     CREATE TABLE IF NOT EXISTS clips (
       id TEXT PRIMARY KEY,
@@ -124,31 +119,48 @@ function dbInit() {
 
   // Migrations
   ensureColumn("clips", "imageName", `ALTER TABLE clips ADD COLUMN imageName TEXT;`);
+  ensureColumn("clips", "color", `ALTER TABLE clips ADD COLUMN color TEXT;`);
+  ensureColumn("clips", "borderColor", `ALTER TABLE clips ADD COLUMN borderColor TEXT;`);
+ensureColumn("clips", "bgColor", `ALTER TABLE clips ADD COLUMN bgColor TEXT;`);
 
   // Defaults
-  if (!db.prepare("SELECT 1 FROM settings WHERE key = ?").get("popupShortcut")) {
-    db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)").run("popupShortcut", "CommandOrControl+Shift+V");
+  if (!db.prepare("SELECT 1 FROM settings WHERE key=?").get("popupShortcut")) {
+    db.prepare("INSERT INTO settings(key,value) VALUES(?,?)").run(
+      "popupShortcut",
+      "CommandOrControl+Shift+V"
+    );
   }
 
-  if (!db.prepare("SELECT 1 FROM settings WHERE key = ?").get("theme")) {
-    db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)").run("theme", JSON.stringify(DEFAULT_THEME));
+  if (!db.prepare("SELECT 1 FROM settings WHERE key=?").get("theme")) {
+    db.prepare("INSERT INTO settings(key,value) VALUES(?,?)").run(
+      "theme",
+      JSON.stringify(DEFAULT_THEME)
+    );
+  }
+
+  if (!db.prepare("SELECT 1 FROM settings WHERE key=?").get("lang")) {
+    db.prepare("INSERT INTO settings(key,value) VALUES(?,?)").run("lang", "en");
   }
 }
 
+// ---------- Theme / Settings ----------
 function getSettings(): Settings {
-  const s = db.prepare("SELECT value FROM settings WHERE key=?").get("popupShortcut") as { value: string } | undefined;
-  return { popupShortcut: s?.value ?? "CommandOrControl+Shift+V" };
+  const r = db.prepare("SELECT value FROM settings WHERE key=?").get("popupShortcut") as
+    | { value: string }
+    | undefined;
+  return { popupShortcut: r?.value ?? "CommandOrControl+Shift+V" };
 }
 
 function setSetting(key: string, value: string) {
-  db.prepare("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(
-    key,
-    value
-  );
+  db.prepare(
+    "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+  ).run(key, value);
 }
 
 function getTheme(): Theme {
-  const r = db.prepare("SELECT value FROM settings WHERE key=?").get("theme") as { value: string } | undefined;
+  const r = db.prepare("SELECT value FROM settings WHERE key=?").get("theme") as
+    | { value: string }
+    | undefined;
   const parsed = r?.value ? safeJson<Theme>(r.value, DEFAULT_THEME) : DEFAULT_THEME;
   return { ...DEFAULT_THEME, ...parsed };
 }
@@ -157,7 +169,19 @@ function setTheme(theme: Theme) {
   setSetting("theme", JSON.stringify({ ...DEFAULT_THEME, ...theme }));
 }
 
-// ---------------- Clip operations ----------------
+function getLang(): Lang {
+  const r = db.prepare("SELECT value FROM settings WHERE key=?").get("lang") as
+    | { value: string }
+    | undefined;
+  const v = (r?.value ?? "en") as Lang;
+  return v === "km" ? "km" : "en";
+}
+
+function setLang(lang: Lang) {
+  setSetting("lang", lang);
+}
+
+// ---------- Clip helpers ----------
 function nowId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -168,13 +192,14 @@ function pad2(n: number) {
 
 function defaultImageName() {
   const d = new Date();
-  return `Image-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}-${pad2(
-    d.getMinutes()
-  )}-${pad2(d.getSeconds())}.png`;
+  return `Image-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(
+    d.getHours()
+  )}-${pad2(d.getMinutes())}-${pad2(d.getSeconds())}.png`;
 }
 
 function tryGetClipboardFileName(): string | undefined {
   try {
+    // macOS: file URL UTI
     const buf = clipboard.readBuffer("public.file-url");
     if (!buf?.length) return undefined;
 
@@ -188,36 +213,55 @@ function tryGetClipboardFileName(): string | undefined {
   }
 }
 
-function insertTextClip(textRaw: string) {
-  const text = (textRaw ?? "").trim();
-  if (!text) return;
-
-  // de-dup by text
-  const existing = db.prepare("SELECT id FROM clips WHERE kind='text' AND text=?").get(text) as
-    | { id: string }
-    | undefined;
-  if (existing?.id) db.prepare("DELETE FROM clips WHERE id=?").run(existing.id);
-
-  db.prepare(
-    "INSERT INTO clips(id, kind, text, imageDataUrl, imageName, createdAt, pinned, tagsJson) VALUES(?, 'text', ?, NULL, NULL, ?, 0, '[]')"
-  ).run(nowId(), text, Date.now());
+function rowToClip(r: any) {
+  return {
+    id: r.id,
+    kind: r.kind,
+    text: r.text ?? undefined,
+    imageDataUrl: r.imageDataUrl ?? undefined,
+    imageName: r.imageName ?? undefined,
+    borderColor: r.borderColor ?? undefined,
+    bgColor: r.bgColor ?? undefined,
+    createdAt: r.createdAt,
+    pinned: r.pinned,
+    tags: safeJson(r.tagsJson, [])
+  };
 }
 
-function insertImageClip(png: Buffer, imageName?: string) {
-  if (!png?.length) return;
+function insertClip(item: Omit<ClipItem, "id" | "createdAt" | "pinned" | "tags">) {
+  const id = nowId();
+  const createdAt = Date.now();
 
-  const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
+  if (item.kind === "text") {
+    const text = (item.text ?? "").trim();
+    if (!text) return;
+
+    const existing = db
+      .prepare("SELECT id FROM clips WHERE kind='text' AND text=?")
+      .get(text) as { id: string } | undefined;
+    if (existing?.id) db.prepare("DELETE FROM clips WHERE id=?").run(existing.id);
+
+    db.prepare(
+      `INSERT INTO clips(id, kind, text, imageDataUrl, imageName, color, createdAt, pinned, tagsJson)
+       VALUES(?, 'text', ?, NULL, NULL, NULL, ?, 0, '[]')`
+    ).run(id, text, createdAt);
+
+    return;
+  }
+
+  const dataUrl = item.imageDataUrl ?? "";
+  if (!dataUrl.startsWith("data:image/png;base64,")) return;
   if (dataUrl.length < 2000) return;
 
-  const name = (imageName ?? "").trim() || defaultImageName();
+  const imageName = (item.imageName ?? "").trim() || defaultImageName();
 
-  // de-dup by prefix+length (cheap)
+  // cheap de-dup in last 30 images
   const sig = dataUrl.slice(0, 100) + ":" + dataUrl.length;
-  const recent = db
+  const existing = db
     .prepare("SELECT id, imageDataUrl FROM clips WHERE kind='image' ORDER BY createdAt DESC LIMIT 30")
     .all() as { id: string; imageDataUrl: string }[];
 
-  for (const e of recent) {
+  for (const e of existing) {
     const esig = (e.imageDataUrl?.slice(0, 100) ?? "") + ":" + (e.imageDataUrl?.length ?? 0);
     if (esig === sig) {
       db.prepare("DELETE FROM clips WHERE id=?").run(e.id);
@@ -226,8 +270,9 @@ function insertImageClip(png: Buffer, imageName?: string) {
   }
 
   db.prepare(
-    "INSERT INTO clips(id, kind, text, imageDataUrl, imageName, createdAt, pinned, tagsJson) VALUES(?, 'image', NULL, ?, ?, ?, 0, '[]')"
-  ).run(nowId(), dataUrl, name, Date.now());
+    `INSERT INTO clips(id, kind, text, imageDataUrl, imageName, color, createdAt, pinned, tagsJson)
+     VALUES(?, 'image', NULL, ?, ?, NULL, ?, 0, '[]')`
+  ).run(id, dataUrl, imageName, createdAt);
 }
 
 function getHistory(query: string): ClipItem[] {
@@ -238,16 +283,19 @@ function getHistory(query: string): ClipItem[] {
 
   if (!q) return items;
 
-  return items.filter((it) => {
-    if (q === "image") return it.kind === "image";
+  return items.filter((it: ClipItem) => {
     const tags = (it.tags ?? []).join(",").toLowerCase();
     const text = (it.text ?? "").toLowerCase();
     const name = (it.imageName ?? "").toLowerCase();
+
+    // "image" filter
+    if (q === "image") return it.kind === "image";
+
     return text.includes(q) || tags.includes(q) || name.includes(q);
   });
 }
 
-// ---------------- Window / Tray ----------------
+// ---------- Window / tray ----------
 function createWindow() {
   win = new BrowserWindow({
     width: 560,
@@ -306,10 +354,10 @@ function createTray() {
   const trayIconPath = getResourcePath("trayTemplate.png");
   tray = new Tray(trayIconPath);
 
-  tray.setToolTip("ClipVault");
+  tray.setToolTip("Quantum Clipboard");
 
   const menu = Menu.buildFromTemplate([
-    { label: "Open ClipVault", click: () => showPopupNearCursor() },
+    { label: "Open Quantum Clipboard", click: () => showPopupNearCursor() },
     { type: "separator" },
     { label: `Version ${app.getVersion()}`, enabled: false },
     {
@@ -319,7 +367,7 @@ function createTray() {
           type: "info",
           title: "Updates",
           message: "Auto-update is not configured yet.",
-          detail: "Later you can enable publishing and autoUpdater here."
+          detail: "Publish a new release to update the Homebrew cask."
         });
       }
     },
@@ -331,15 +379,31 @@ function createTray() {
   tray.on("click", () => showPopupNearCursor());
 }
 
-// ---------------- Clipboard polling (stable) ----------------
+// ---------- Shortcut (robust) ----------
+function normalizeAccelerator(raw: string) {
+  return (raw || "").trim().replace(/\s+/g, "").replace(/^\+|\+$/g, "");
+}
+
+function setGlobalShortcut(accelRaw: string) {
+  const accel = normalizeAccelerator(accelRaw);
+  if (!accel) return { ok: false as const, reason: "Empty shortcut" };
+
+  globalShortcut.unregisterAll();
+  const ok = globalShortcut.register(accel, () => showPopupNearCursor());
+  if (!ok) return { ok: false as const, reason: "Invalid or already in use" };
+
+  return { ok: true as const };
+}
+
+// ---------- Clipboard polling ----------
 let lastText = "";
 let lastImageSig = "";
 let lastSeenTick = 0;
 
-function sigFromPng(png: Buffer) {
-  if (!png?.length) return "";
-  const head = png.subarray(0, Math.min(64, png.length)).toString("hex");
-  return `${head}:${png.length}`;
+function sigFromImage(img: Electron.NativeImage) {
+  const png = img.toPNG();
+  if (!png.length) return "";
+  return png.subarray(0, Math.min(64, png.length)).toString("hex") + ":" + png.length;
 }
 
 function pollClipboard() {
@@ -348,41 +412,36 @@ function pollClipboard() {
     if (tick - lastSeenTick < 200) return;
     lastSeenTick = tick;
 
-    // 1) Text first
+    // Text first
     const text = clipboard.readText();
     const trimmed = text.trim();
     if (trimmed && trimmed !== lastText) {
       lastText = trimmed;
-      insertTextClip(trimmed);
+      insertClip({ kind: "text", text: trimmed });
       win?.webContents.send("history-updated");
       return;
     }
 
-    // 2) Image second
+    // Image second
     const img = clipboard.readImage();
     if (img.isEmpty()) return;
 
     const png = img.toPNG();
-    // ignore tiny "ghost" icons
-    if (png.length < 8192) return;
+    if (png.length < 8192) return; // ignore tiny ghost icons
 
-    const sig = sigFromPng(png);
+    const sig = sigFromImage(img);
     if (!sig || sig === lastImageSig) return;
     lastImageSig = sig;
 
+    const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
     const fileName = tryGetClipboardFileName() ?? defaultImageName();
-    insertImageClip(png, fileName);
+
+    insertClip({ kind: "image", imageDataUrl: dataUrl, imageName: fileName });
     win?.webContents.send("history-updated");
   }, 450);
 }
 
-// ---------------- Shortcuts ----------------
-function registerShortcut(accel: string) {
-  globalShortcut.unregisterAll();
-  return globalShortcut.register(accel, () => showPopupNearCursor());
-}
-
-// ---------------- IPC ----------------
+// ---------- IPC ----------
 function setupIPC() {
   ipcMain.handle("get-history", async (_e, payload: { query: string }) => {
     return getHistory(payload?.query ?? "");
@@ -390,7 +449,7 @@ function setupIPC() {
 
   ipcMain.handle(
     "set-clipboard",
-    async (_e, payload: { kind: "text" | "image"; text?: string; imageDataUrl?: string }) => {
+    async (_e, payload: { kind: ClipKind; text?: string; imageDataUrl?: string }) => {
       try {
         if (payload.kind === "text") {
           clipboard.writeText(payload.text ?? "");
@@ -410,20 +469,6 @@ function setupIPC() {
       }
     }
   );
-
-  ipcMain.handle("update-clip-text", async (_e, payload: { id: string; text: string }) => {
-    const text = (payload.text ?? "").trim();
-    db.prepare("UPDATE clips SET text=? WHERE id=? AND kind='text'").run(text, payload.id);
-    win?.webContents.send("history-updated");
-    return true;
-  });
-
-  ipcMain.handle("rename-clip", async (_e, payload: { id: string; name: string }) => {
-    const name = (payload.name ?? "").trim();
-    db.prepare("UPDATE clips SET imageName=? WHERE id=? AND kind='image'").run(name, payload.id);
-    win?.webContents.send("history-updated");
-    return true;
-  });
 
   ipcMain.handle("delete-clip", async (_e, id: string) => {
     db.prepare("DELETE FROM clips WHERE id=?").run(id);
@@ -451,6 +496,41 @@ function setupIPC() {
     win?.webContents.send("history-updated");
     return true;
   });
+  ipcMain.handle("set-clip-border-color", async (_e, payload: { id: string; color: string }) => {
+    const color = (payload.color ?? "").trim();
+    db.prepare("UPDATE clips SET borderColor=? WHERE id=?").run(color, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
+
+  ipcMain.handle("set-clip-bg-color", async (_e, payload: { id: string; color: string }) => {
+    const color = (payload.color ?? "").trim();
+    db.prepare("UPDATE clips SET bgColor=? WHERE id=?").run(color, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
+
+
+  ipcMain.handle("update-clip-text", async (_e, payload: { id: string; text: string }) => {
+    const text = (payload.text ?? "").trim();
+    db.prepare("UPDATE clips SET text=? WHERE id=? AND kind='text'").run(text, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
+
+  ipcMain.handle("rename-clip", async (_e, payload: { id: string; name: string }) => {
+    const name = (payload.name ?? "").trim();
+    db.prepare("UPDATE clips SET imageName=? WHERE id=? AND kind='image'").run(name, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
+
+  ipcMain.handle("set-clip-color", async (_e, payload: { id: string; color: string }) => {
+    const color = (payload.color ?? "").trim();
+    db.prepare("UPDATE clips SET color=? WHERE id=?").run(color, payload.id);
+    win?.webContents.send("history-updated");
+    return true;
+  });
 
   ipcMain.handle("hide-popup", async () => {
     win?.hide();
@@ -460,25 +540,27 @@ function setupIPC() {
   ipcMain.handle("get-settings", async () => getSettings());
 
   ipcMain.handle("set-popup-shortcut", async (_e, accelerator: string) => {
-    const accel = (accelerator ?? "").trim();
-    if (!accel) return { ok: false, reason: "Empty shortcut" };
+    const res = setGlobalShortcut(accelerator);
+    if (!res.ok) return res;
 
-    const ok = registerShortcut(accel);
-    if (!ok) return { ok: false, reason: "Invalid or already in use" };
-
-    setSetting("popupShortcut", accel);
+    setSetting("popupShortcut", normalizeAccelerator(accelerator));
     return { ok: true };
   });
 
   ipcMain.handle("get-theme", async () => getTheme());
-
   ipcMain.handle("set-theme", async (_e, theme: Theme) => {
     setTheme(theme);
     return true;
   });
+
+  ipcMain.handle("get-lang", async () => getLang());
+  ipcMain.handle("set-lang", async (_e, lang: Lang) => {
+    setLang(lang === "km" ? "km" : "en");
+    return true;
+  });
 }
 
-// ---------------- App lifecycle ----------------
+// ---------- App lifecycle ----------
 app.whenReady().then(() => {
   dbInit();
   createWindow();
@@ -486,7 +568,12 @@ app.whenReady().then(() => {
   pollClipboard();
 
   const s = getSettings();
-  registerShortcut(s.popupShortcut);
+  const reg = setGlobalShortcut(s.popupShortcut);
+  if (!reg.ok) {
+    // fallback
+    setGlobalShortcut("CommandOrControl+Shift+V");
+    setSetting("popupShortcut", "CommandOrControl+Shift+V");
+  }
 
   if (process.platform === "darwin" && app.isPackaged) {
     app.dock.hide();

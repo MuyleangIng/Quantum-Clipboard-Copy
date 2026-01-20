@@ -273,3 +273,70 @@ img {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
   resize: vertical;
 }
+
+
+
+.cv-color-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+
+.cv-color-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cv-color-swatch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+.cv-color-swatch > span {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Make the real input cover the whole swatch (easy click) */
+.cv-color-swatch input[type="color"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.cv-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.cv-section-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.cv-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+/* .cv-grid { grid-template-columns: 1fr 1fr; } */
+
+.cv-color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
