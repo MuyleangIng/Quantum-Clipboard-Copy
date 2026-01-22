@@ -1,69 +1,48 @@
+// ============================
+// FILE: src/renderer/global.d.ts
+// (TypeScript) window.clipvault typing
+// ============================
+
 export {};
-
-type ClipKind = "text" | "image";
-type Lang = "en" | "km";
-
-type ClipItem = {
-  id: string;
-  kind: ClipKind;
-  text?: string;
-  imageDataUrl?: string;
-  imageName?: string;
-  color?: string;
-  createdAt: number;
-  pinned: 0 | 1;
-  tags: string[];
-  borderColor?: string;
-bgColor?: string;
-};
-
-type Theme = {
-  bg: string;
-  panel: string;
-  border: string;
-  text: string;
-  muted: string;
-  danger: string;
-  accent: string;
-};
 
 declare global {
   interface Window {
     clipvault: {
-      // Clipboard
-      getHistory: (query?: string) => Promise<ClipItem[]>;
-      setClipboard: (payload: { kind: ClipKind; text?: string; imageDataUrl?: string }) => Promise<boolean>;
+      rendererReady: () => void;
 
-      deleteClip: (id: string) => Promise<boolean>;
-      clearAll: () => Promise<boolean>;
-      togglePin: (id: string) => Promise<boolean>;
-      setTags: (id: string, tags: string[]) => Promise<boolean>;
-    setColorPickerOpen?: (open: boolean) => void;
-
-      updateClipText: (id: string, text: string) => Promise<boolean>;
-      renameClip: (id: string, name: string) => Promise<boolean>;
-      setClipColor: (id: string, color: string) => Promise<boolean>;
-
-      setClipBorderColor: (id: string, color: string) => Promise<boolean>;
-      setClipBgColor: (id: string, color: string) => Promise<boolean>;
-      // Window
-      hidePopup: () => Promise<boolean>;
-
-      // Settings
-      getSettings: () => Promise<{ popupShortcut: string }>;
-      setPopupShortcut: (accelerator: string) => Promise<{ ok: boolean; reason?: string }>;
-
-      // Theme
-      getTheme: () => Promise<Theme>;
-      setTheme: (theme: Theme) => Promise<boolean>;
-
-      // Language
-      getLang: () => Promise<Lang>;
-      setLang: (lang: Lang) => Promise<boolean>;
-
-      // Events
-      onHistoryUpdated: (cb: () => void) => () => void;
       onPopupOpened: (cb: () => void) => () => void;
+      onSettingsUpdated: (cb: (s: any) => void) => () => void;
+      onHistoryUpdated: (cb: () => void) => () => void;
+
+      showPopup: () => Promise<any>;
+      hidePopup: () => Promise<any>;
+      minimizePopup: () => Promise<any>;
+
+      setInteractionState: (partial: {
+        isSettingsOpen?: boolean;
+        isModalOpen?: boolean;
+        isPickingColor?: boolean;
+        isRecordingShortcut?: boolean;
+        isTypingSearch?: boolean;
+      }) => Promise<{ ok: boolean }>;
+
+      getSettings: () => Promise<any>;
+      setSettings: (partial: any) => Promise<{ ok: boolean }>;
+
+      setPopupShortcut: (accel: string) => Promise<{ ok: boolean; reason?: string }>;
+      getStartAtLogin: () => Promise<{ ok: boolean; value: boolean }>;
+      setStartAtLogin: (openAtLogin: boolean) => Promise<{ ok: boolean }>;
+
+      getHistory: (q: string) => Promise<any[]>;
+      deleteClip: (id: string) => Promise<any>;
+      clearAll: () => Promise<any>;
+      togglePin: (id: string) => Promise<any>;
+      setTags: (id: string, tags: string[]) => Promise<any>;
+      updateClipText: (id: string, text: string) => Promise<any>;
+      renameClip: (id: string, name: string) => Promise<any>;
+      setClipboard: (payload: any) => Promise<any>;
+            onCopied: () => Promise<void>;
+
     };
   }
 }
