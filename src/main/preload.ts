@@ -1,92 +1,91 @@
+// ============================
+// FILE: src/main/preload.ts
+// ============================
+
 import { contextBridge, ipcRenderer } from "electron";
 
 type ClipKind = "text" | "image";
-
-type ClipItem = {
-  id: string;
-  kind: ClipKind;
-  text?: string;
-  imageDataUrl?: string;
-  imageName?: string;
-  color?: string;
-  createdAt: number;
-  pinned: 0 | 1;
-  tags: string[];
-};
-
-type Settings = { popupShortcut: string };
-
-type Theme = {
-  bg: string;
-  panel: string;
-  border: string;
-  text: string;
-  muted: string;
-  danger: string;
-  accent: string;
-};
-
 type Lang = "en" | "km";
 
+type Theme = Record<string, any>;
+
+type Settings = {
+  popupShortcut: string;
+  closeOnCopy: boolean;
+  closeOnCopyDelayMs: number;
+  closeOnBlur: boolean;
+  startAtLogin: boolean;
+  lang: Lang;
+  theme: Partial<Theme>;
+};
+
+type InteractionState = {
+  isSettingsOpen: boolean;
+  isModalOpen: boolean;
+  isPickingColor: boolean;
+  isRecordingShortcut: boolean;
+  isTypingSearch: boolean;
+};
+
 contextBridge.exposeInMainWorld("clipvault", {
-  // Clips
-  getHistory: (query?: string) =>
-    ipcRenderer.invoke("get-history", { query: query ?? "" }) as Promise<ClipItem[]>,
+  // lifecycle
+  rendererReady: () => ipcRenderer.send("rendererReady"),
 
+  // window controls
+  showPopup: () => ipcRenderer.invoke("showPopup"),
+  hidePopup: () => ipcRenderer.invoke("hidePopup"),
+  minimizePopup: () => ipcRenderer.invoke("minimizePopup"),
+
+  // interaction locks
+  setInteractionState: (partial: Partial<InteractionState>) =>
+    ipcRenderer.invoke("setInteractionState", partial),
+
+  // settings
+  getSettings: (): Promise<Settings> => ipcRenderer.invoke("getSettings"),
+  setSettings: (partial: Partial<Settings>) => ipcRenderer.invoke("setSettings", partial),
+  setPopupShortcut: (accelerator: string) => ipcRenderer.invoke("setPopupShortcut", accelerator),
+
+  // start at login
+  getStartAtLogin: () => ipcRenderer.invoke("getStartAtLogin"),
+  setStartAtLogin: (openAtLogin: boolean) => ipcRenderer.invoke("setStartAtLogin", openAtLogin),
+
+  // history
+  getHistory: (query: string) => ipcRenderer.invoke("getHistory", query),
+
+  // clipboard write (copy from app -> system clipboard)
   setClipboard: (payload: { kind: ClipKind; text?: string; imageDataUrl?: string }) =>
-    ipcRenderer.invoke("set-clipboard", payload) as Promise<boolean>,
+    ipcRenderer.invoke("setClipboard", payload),
 
-  deleteClip: (id: string) => ipcRenderer.invoke("delete-clip", id) as Promise<boolean>,
-  clearAll: () => ipcRenderer.invoke("clear-all") as Promise<boolean>,
-  togglePin: (id: string) => ipcRenderer.invoke("toggle-pin", id) as Promise<boolean>,
+  // CRUD
+  deleteClip: (id: string) => ipcRenderer.invoke("deleteClip", id),
+  clearAll: () => ipcRenderer.invoke("clearAll"),
+  togglePin: (id: string) => ipcRenderer.invoke("togglePin", id),
 
-  setTags: (id: string, tags: string[]) =>
-    ipcRenderer.invoke("set-tags", { id, tags }) as Promise<boolean>,
+  // IMPORTANT: match main signatures (separate args, not object)
+  setTags: (id: string, tags: string[]) => ipcRenderer.invoke("setTags", id, tags),
+  updateClipText: (id: string, text: string) => ipcRenderer.invoke("updateClipText", id, text),
+  renameClip: (id: string, name: string) => ipcRenderer.invoke("renameClip", id, name),
 
-  updateClipText: (id: string, text: string) =>
-    ipcRenderer.invoke("update-clip-text", { id, text }) as Promise<boolean>,
-
-  renameClip: (id: string, name: string) =>
-    ipcRenderer.invoke("rename-clip", { id, name }) as Promise<boolean>,
-
-  setClipColor: (id: string, color: string) =>
-    ipcRenderer.invoke("set-clip-color", { id, color }) as Promise<boolean>,
-
-  // Window
-  hidePopup: () => ipcRenderer.invoke("hide-popup") as Promise<boolean>,
-
-  // Settings
-  getSettings: () => ipcRenderer.invoke("get-settings") as Promise<Settings>,
-  setPopupShortcut: (accelerator: string) =>
-    ipcRenderer.invoke("set-popup-shortcut", accelerator) as Promise<{ ok: boolean; reason?: string }>,
-
-  // Theme
-  getTheme: () => ipcRenderer.invoke("get-theme") as Promise<Theme>,
-  setTheme: (theme: Theme) => ipcRenderer.invoke("set-theme", theme) as Promise<boolean>,
-
-  // Language
-  getLang: () => ipcRenderer.invoke("get-lang") as Promise<Lang>,
-  setLang: (lang: Lang) => ipcRenderer.invoke("set-lang", lang) as Promise<boolean>,
-
-  // Events
-  onHistoryUpdated: (cb: () => void) => {
-    const handler = () => cb();
-    ipcRenderer.on("history-updated", handler);
-    return () => ipcRenderer.removeListener("history-updated", handler);
-  },
-
-  setClipBorderColor: (id: string, color: string) =>
-  ipcRenderer.invoke("set-clip-border-color", { id, color }) as Promise<boolean>,
-
-  // ✅ NEW: tell main process we are using native color picker
-  setColorPickerOpen: (open: boolean) => {
-    ipcRenderer.send("cv:color-picker-open", !!open);
-  },
-  setClipBgColor: (id: string, color: string) =>
-  ipcRenderer.invoke("set-clip-bg-color", { id, color }) as Promise<boolean>,
+  // events (must match main)
   onPopupOpened: (cb: () => void) => {
     const handler = () => cb();
-    ipcRenderer.on("popup-opened", handler);
-    return () => ipcRenderer.removeListener("popup-opened", handler);
-  }
+    ipcRenderer.on("popupOpened", handler);
+    return () => ipcRenderer.removeListener("popupOpened", handler);
+  },
+
+  onSettingsUpdated: (cb: (s: Settings) => void) => {
+    const handler = (_: any, s: Settings) => cb(s);
+    ipcRenderer.on("settingsUpdated", handler);
+    return () => ipcRenderer.removeListener("settingsUpdated", handler);
+  },
+
+  // when DB changes (polling inserts, delete, pin, etc.)
+  onHistoryUpdated: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on("historyUpdated", handler);
+    return () => ipcRenderer.removeListener("historyUpdated", handler);
+  },
 });
+
+// Optional: TypeScript typing helper (safe even if you omit)
+export {};

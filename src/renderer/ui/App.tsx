@@ -1,21 +1,33 @@
+// ============================
+// FILE: src/renderer/App.tsx
+// ============================
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { HexColorPicker, HexColorInput } from "react-colorful";
 
 type ClipKind = "text" | "image";
 type Lang = "en" | "km";
-
+// put near the top of App.tsx (outside component)
+function applyThemeToCssRoot(theme: any) {
+  const r = document.documentElement; // :root
+  r.style.setProperty("--bg", theme.bg);
+  r.style.setProperty("--panel", theme.panel);
+  r.style.setProperty("--border", theme.border);
+  r.style.setProperty("--text", theme.text);
+  r.style.setProperty("--muted", theme.muted);
+  r.style.setProperty("--danger", theme.danger);
+  r.style.setProperty("--accent", theme.accent);
+}
 type ClipItem = {
   id: string;
   kind: ClipKind;
   text?: string;
   imageDataUrl?: string;
   imageName?: string;
-
-  // Per-item colors (HEX recommended)
   borderColor?: string;
   bgColor?: string;
-
   createdAt: number;
+  updatedAt?: number;
   pinned: 0 | 1;
   tags: string[];
 };
@@ -35,10 +47,19 @@ type Theme = {
   controlBg: string;
   controlBorder: string;
 
-  // NEW
   itemText: string;
   itemMuted: string;
   controlText: string;
+};
+
+type Settings = {
+  popupShortcut: string;
+  closeOnCopy: boolean;
+  closeOnCopyDelayMs: number;
+  closeOnBlur: boolean;
+  startAtLogin: boolean;
+  lang: Lang;
+  theme: Partial<Theme>;
 };
 
 const DEFAULT_THEME: Theme = {
@@ -96,22 +117,27 @@ const I18N: Record<Lang, Record<string, string>> = {
     tagsHelp: "Comma-separated, e.g. qaoa, notes, paper",
     save: "Save",
     cancel: "Cancel",
-
     copied: "Copied",
     deleted: "Deleted",
     cleared: "Cleared",
     captured: "Captured",
     themeSaved: "Theme saved",
     tagsSaved: "Tags saved",
-
     itemBorder: "Item Border",
     itemBg: "Item Background",
     controlBg: "Control Background",
     controlBorder: "Control Border",
-
     itemText: "Item Text",
     itemMuted: "Item Muted",
     controlText: "Control Text",
+    behavior: "Behavior",
+    closeOnCopy: "Close after copy",
+    closeDelay: "Close delay (ms)",
+    closeOnBlur: "Close on focus loss (blur)",
+    system: "System",
+    startAtLogin: "Launch at login",
+    minimize: "Minimize",
+    close: "Close",
   },
   km: {
     title: "ClipVault",
@@ -147,22 +173,27 @@ const I18N: Record<Lang, Record<string, string>> = {
     tagsHelp: "បំបែកដោយក្បៀស ឧ. qaoa, notes, paper",
     save: "រក្សាទុក",
     cancel: "បោះបង់",
-
     copied: "បានចម្លង",
     deleted: "បានលុប",
     cleared: "បានលុបទាំងអស់",
     captured: "បានចាប់យក",
     themeSaved: "បានរក្សាទុករចនាប័ទ្ម",
     tagsSaved: "បានរក្សាទុកស្លាក",
-
     itemBorder: "ពណ៌ស៊ុម (Item)",
     itemBg: "ពណ៌ផ្ទៃ (Item)",
     controlBg: "ពណ៌ផ្ទៃ (Controls)",
     controlBorder: "ពណ៌ស៊ុម (Controls)",
-
     itemText: "ពណ៌អក្សរ (Item)",
     itemMuted: "ពណ៌អក្សរតូច (Item)",
     controlText: "ពណ៌អក្សរ (Controls)",
+    behavior: "ការប្រើប្រាស់",
+    closeOnCopy: "បិទបន្ទាប់ពីចម្លង",
+    closeDelay: "ពន្យាពេលបិទ (ms)",
+    closeOnBlur: "បិទពេលបាត់ focus",
+    system: "ប្រព័ន្ធ",
+    startAtLogin: "បើកពេលចូលប្រព័ន្ធ",
+    minimize: "បង្រួម",
+    close: "បិទ",
   },
 };
 
@@ -207,8 +238,11 @@ function keyEventToAccelerator(e: KeyboardEvent) {
 
 type ModalKind = "none" | "tags" | "editText" | "renameImage";
 
-/** Click-outside hook (capture phase) */
-function useOutsideClick(ref: React.RefObject<HTMLElement>, onOutside: () => void, enabled: boolean) {
+function useOutsideClick<T extends HTMLElement>(
+  ref: React.RefObject<T | null>,
+  onOutside: () => void,
+  enabled: boolean
+) {
   useEffect(() => {
     if (!enabled) return;
 
@@ -224,18 +258,13 @@ function useOutsideClick(ref: React.RefObject<HTMLElement>, onOutside: () => voi
   }, [enabled, onOutside, ref]);
 }
 
-function normalizeHex(v: string) {
-  if (!v) return "#000000";
-  if (v.startsWith("#")) return v;
-  return `#${v}`;
+// Helper: don't hijack Cmd+C when user is typing/selecting text in an input/textarea
+function isTextEditingTarget(el: Element | null) {
+  if (!el) return false;
+  const tag = (el as HTMLElement).tagName?.toLowerCase();
+  return tag === "input" || tag === "textarea" || (el as HTMLElement).isContentEditable;
 }
 
-/**
- * The important part:
- * - call onPickerOpenChange(true) when open
- * - call onPickerOpenChange(false) when closed
- * - stopPropagation on the popover so it never triggers window/popup close
- */
 function ColorRowHex({
   label,
   value,
@@ -259,7 +288,7 @@ function ColorRowHex({
     open
   );
 
-  const color = normalizeHex(value);
+  const color = (value || "#000000").startsWith("#") ? value : `#${value}`;
 
   return (
     <div className="cv-row cv-nodrag" style={{ position: "relative" }}>
@@ -272,8 +301,8 @@ function ColorRowHex({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            setOpen((prev) => {
-              const next = !prev;
+            setOpen((v) => {
+              const next = !v;
               onPickerOpenChange?.(next);
               return next;
             });
@@ -286,21 +315,14 @@ function ColorRowHex({
             background: color,
             cursor: "pointer",
           }}
-          aria-label={`Pick ${label} color`}
         />
 
         <HexColorInput
           className="cv-input cv-nodrag"
           color={color}
+          onFocus={() => onPickerOpenChange?.(true)}
+          onChange={(v) => onChange(v.startsWith("#") ? v : `#${v}`)}
           prefixed
-          onMouseDown={(e) => e.stopPropagation()}
-          onFocus={() => {
-            // optional: keep open while typing
-          }}
-          onChange={(v) => {
-            const next = normalizeHex(v);
-            onChange(next);
-          }}
         />
       </div>
 
@@ -308,9 +330,7 @@ function ColorRowHex({
         <div
           ref={popRef}
           className="cv-nodrag"
-          // Critical: stop events so the popup does NOT think you clicked outside / dragged window
           onMouseDown={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
           style={{
             position: "absolute",
@@ -324,16 +344,17 @@ function ColorRowHex({
             boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
           }}
         >
-          <HexColorPicker
-            color={color}
-            onChange={(v) => {
-              onChange(normalizeHex(v));
-            }}
-          />
+          <div
+            className="cv-nodrag"
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <HexColorPicker color={color} onChange={(v) => onChange(v)} />
+          </div>
+
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
             <button
               className="cv-btn cv-nodrag"
-              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 setOpen(false);
@@ -352,6 +373,11 @@ function ColorRowHex({
 export default function App() {
   const [items, setItems] = useState<ClipItem[]>([]);
   const [query, setQuery] = useState("");
+  const queryRef = useRef("");
+  useEffect(() => {
+    queryRef.current = query;
+  }, [query]);
+
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -367,8 +393,15 @@ export default function App() {
   const toastTimer = useRef<number | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // This is the only flag you need for blocking ESC close:
+  // behavior settings
+  const [closeOnCopy, setCloseOnCopy] = useState(true);
+  const [closeOnCopyDelayMs, setCloseOnCopyDelayMs] = useState(0);
+  const [closeOnBlur, setCloseOnBlur] = useState(false);
+  const [startAtLogin, setStartAtLogin] = useState(false);
+
+  // interaction locks
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [isTypingSearch, setIsTypingSearch] = useState(false);
 
   const [modal, setModal] = useState<ModalKind>("none");
   const [modalItem, setModalItem] = useState<ClipItem | null>(null);
@@ -381,23 +414,62 @@ export default function App() {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 1100);
   }
-
+useEffect(() => {
+  applyThemeToCssRoot(theme);
+}, [theme]);
   async function refresh(q: string) {
     const h = await window.clipvault.getHistory(q);
     setItems(h as any);
     setSelectedIndex(0);
   }
 
+  async function persistSettings(partial: Partial<Settings>) {
+    await window.clipvault.setSettings(partial);
+  }
+
+  async function copyItem(item: ClipItem) {
+    if (item.kind === "text") {
+      await window.clipvault.setClipboard({ kind: "text", text: item.text ?? "" });
+    } else {
+      await window.clipvault.setClipboard({ kind: "image", imageDataUrl: item.imageDataUrl ?? "" });
+    }
+
+    showToast(t("copied"));
+
+    if (closeOnCopy) {
+      const d = Number(closeOnCopyDelayMs ?? 0);
+      if (d > 0) window.setTimeout(() => window.clipvault.hidePopup(), d);
+      else await window.clipvault.hidePopup();
+    }
+  }
+
+  /* ------------------ lifecycle ------------------ */
+
   useEffect(() => {
-    window.clipvault.getSettings().then((s) => setShortcutDraft(s.popupShortcut));
-    window.clipvault.getTheme().then((th) => setTheme({ ...DEFAULT_THEME, ...th }));
-    window.clipvault.getLang().then((l) => setLang(l)).catch(() => undefined);
+    window.clipvault.rendererReady();
+
+    window.clipvault.getSettings().then((s: Settings) => {
+      const nextLang: Lang = s?.lang === "km" ? "km" : "en";
+      setLang(nextLang);
+
+      // IMPORTANT: theme must be merged with defaults (otherwise undefined fields crash rootStyle)
+      const nextTheme: Theme = { ...DEFAULT_THEME, ...(s?.theme || {}) };
+      setTheme(nextTheme);
+
+      setShortcutDraft(s?.popupShortcut || "CommandOrControl+Shift+V");
+
+      setCloseOnCopy(Boolean(s?.closeOnCopy));
+      setCloseOnCopyDelayMs(Number(s?.closeOnCopyDelayMs || 0));
+      setCloseOnBlur(Boolean(s?.closeOnBlur));
+      setStartAtLogin(Boolean(s?.startAtLogin));
+    });
+
+    // If you expose this in preload, keep it:
+    window.clipvault.getStartAtLogin?.().then((r: any) => {
+      if (r?.ok) setStartAtLogin(Boolean(r.openAtLogin));
+    });
 
     refresh("").catch(() => undefined);
-
-    const offUpdated = window.clipvault.onHistoryUpdated(() => {
-      refresh(query).catch(() => undefined);
-    });
 
     const offPopup = window.clipvault.onPopupOpened(() => {
       setQuery("");
@@ -406,92 +478,57 @@ export default function App() {
       setShortcutMsg("");
       setModal("none");
       setModalItem(null);
+      setRecording(false);
       setColorPickerOpen(false);
+      setIsTypingSearch(false);
+
       setTimeout(() => inputRef.current?.focus(), 40);
     });
 
-    const onKeyDown = async (e: KeyboardEvent) => {
-      if (recording) {
-        e.preventDefault();
-        e.stopPropagation();
+    const offSettings = window.clipvault.onSettingsUpdated((s: Settings) => {
+      const nextLang: Lang = s?.lang === "km" ? "km" : "en";
+      setLang(nextLang);
 
-        // recording: do not close while picker open
-        if (e.key === "Escape") {
-          if (colorPickerOpen) return;
-          await window.clipvault.hidePopup();
-          return;
-        }
+      const nextTheme: Theme = { ...DEFAULT_THEME, ...(s?.theme || {}) };
+      setTheme(nextTheme);
 
-        const accel = keyEventToAccelerator(e);
-        if (!accel) return;
+      setShortcutDraft(s?.popupShortcut || "CommandOrControl+Shift+V");
 
-        setShortcutDraft(accel);
-        setRecording(false);
-        setShortcutMsg(`${t("captured")}: ${accel}`);
-        return;
-      }
+      setCloseOnCopy(Boolean(s?.closeOnCopy));
+      setCloseOnCopyDelayMs(Number(s?.closeOnCopyDelayMs || 0));
+      setCloseOnBlur(Boolean(s?.closeOnBlur));
+      setStartAtLogin(Boolean(s?.startAtLogin));
+    });
 
-      if (modal !== "none") {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          closeModal();
-        }
-        return;
-      }
+    // ✅ FIX: use queryRef so it always refreshes with the latest query
+    const offHistory = window.clipvault.onHistoryUpdated(() => {
+      refresh(queryRef.current).catch(() => undefined);
+    });
 
-      if (settingsOpen) {
-        if (e.key === "Escape") setSettingsOpen(false);
-        return;
-      }
-
-      if (e.key === "Escape") {
-        e.preventDefault();
-        if (colorPickerOpen) return; // IMPORTANT
-        await window.clipvault.hidePopup();
-        return;
-      }
-
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedIndex((i) => Math.min(i + 1, Math.max(0, visible.length - 1)));
-        return;
-      }
-
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedIndex((i) => Math.max(i - 1, 0));
-        return;
-      }
-
-      if (e.key === "Enter") {
-        e.preventDefault();
-        const it = visible[selectedIndex];
-        if (it) await copyItem(it);
-        return;
-      }
-
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        inputRef.current?.focus();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
     return () => {
-      offUpdated();
       offPopup();
-      window.removeEventListener("keydown", onKeyDown);
+      offSettings();
+      offHistory();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen, selectedIndex, query, recording, modal, lang, colorPickerOpen]);
+  }, []);
 
   useEffect(() => {
     const tt = window.setTimeout(() => refresh(query).catch(() => undefined), 120);
     return () => window.clearTimeout(tt);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
   const visible = useMemo(() => items, [items]);
+
+  // keep main informed of interaction state (optional but recommended)
+  useEffect(() => {
+    window.clipvault.setInteractionState?.({
+      isSettingsOpen: settingsOpen,
+      isModalOpen: modal !== "none",
+      isPickingColor: colorPickerOpen,
+      isRecordingShortcut: recording,
+      isTypingSearch,
+    });
+  }, [settingsOpen, modal, colorPickerOpen, recording, isTypingSearch]);
 
   const rootStyle: React.CSSProperties = {
     ["--bg" as any]: theme.bg,
@@ -503,29 +540,24 @@ export default function App() {
     ["--danger" as any]: theme.danger,
   };
 
-  async function copyItem(item: ClipItem) {
-    if (item.kind === "text") {
-      await window.clipvault.setClipboard({ kind: "text", text: item.text ?? "" });
-    } else {
-      await window.clipvault.setClipboard({ kind: "image", imageDataUrl: item.imageDataUrl ?? "" });
-    }
-    showToast(t("copied"));
-    await window.clipvault.hidePopup();
-  }
+  /* ------------------ actions ------------------ */
 
   async function onDelete(item: ClipItem) {
     await window.clipvault.deleteClip(item.id);
     showToast(t("deleted"));
+    await refresh(query);
   }
 
   async function onClearAll() {
     await window.clipvault.clearAll();
     showToast(t("cleared"));
+    await refresh(query);
   }
 
   async function onTogglePin(item: ClipItem) {
     await window.clipvault.togglePin(item.id);
     showToast(item.pinned ? t("unpin") : t("pin"));
+    await refresh(query);
   }
 
   function openTagsModal(item: ClipItem) {
@@ -562,54 +594,180 @@ export default function App() {
       .filter(Boolean);
 
     await window.clipvault.setTags(modalItem.id, tags);
-    showToast(t("tagsSaved") || "Tags saved");
+    showToast(t("tagsSaved"));
     closeModal();
+    await refresh(query);
   }
 
   async function saveEditText() {
     if (!modalItem) return;
-    await window.clipvault.updateClipText(modalItem.id, editDraft ?? "");
+    const text = editDraft ?? "";
+    await window.clipvault.updateClipText(modalItem.id, text);
     showToast(t("save"));
     closeModal();
+    await refresh(query);
   }
 
   async function saveRenameImage() {
     if (!modalItem) return;
-    await window.clipvault.renameClip(modalItem.id, (renameDraft ?? "").trim());
+    const name = (renameDraft ?? "").trim();
+    await window.clipvault.renameClip(modalItem.id, name);
     showToast(t("save"));
     closeModal();
+    await refresh(query);
   }
 
   async function saveShortcut() {
     setShortcutMsg("Saving…");
     const res = await window.clipvault.setPopupShortcut(shortcutDraft);
-    if (res.ok) {
+    if (res?.ok) {
       setShortcutMsg("Saved");
       showToast("Shortcut updated");
     } else {
-      setShortcutMsg(res.reason || "Failed");
+      setShortcutMsg(res?.reason || "Failed");
     }
   }
 
   async function saveTheme(next: Theme) {
     setTheme(next);
-    await window.clipvault.setTheme(next);
+    await persistSettings({ theme: next });
     showToast(t("themeSaved"));
   }
 
   async function onChangeLang(next: Lang) {
     setLang(next);
-    await window.clipvault.setLang(next);
+    await persistSettings({ lang: next });
     showToast("Saved");
   }
 
+  /* ------------------ keyboard ------------------ */
+
+  useEffect(() => {
+    const onKeyDown = async (e: KeyboardEvent) => {
+      // recording shortcut: do not close popup
+      if (recording) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (e.key === "Escape") {
+          setRecording(false);
+          setShortcutMsg("");
+          return;
+        }
+
+        const accel = keyEventToAccelerator(e);
+        if (!accel) return;
+
+        setShortcutDraft(accel);
+        setRecording(false);
+        setShortcutMsg(`${t("captured")}: ${accel}`);
+        return;
+      }
+
+      // modal: Esc closes modal only
+      if (modal !== "none") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeModal();
+        }
+        return;
+      }
+
+      // color picker open: Esc does nothing
+      if (e.key === "Escape" && colorPickerOpen) {
+        e.preventDefault();
+        return;
+      }
+
+      // settings open: Esc closes settings only
+      if (settingsOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSettingsOpen(false);
+        }
+        return;
+      }
+
+      // normal: Esc hides popup
+      if (e.key === "Escape") {
+        e.preventDefault();
+        await window.clipvault.hidePopup();
+        return;
+      }
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedIndex((i) => Math.min(i + 1, Math.max(0, visible.length - 1)));
+        return;
+      }
+
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedIndex((i) => Math.max(i - 1, 0));
+        return;
+      }
+
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const it = visible[selectedIndex];
+        if (it) await copyItem(it);
+        return;
+      }
+
+      // Cmd/Ctrl+K focuses search
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        inputRef.current?.focus();
+        return;
+      }
+
+      // Cmd/Ctrl+C copies selected item (only if not typing in input/textarea)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
+        const ae = document.activeElement;
+        if (isTextEditingTarget(ae)) return;
+
+        e.preventDefault();
+        const it = visible[selectedIndex];
+        if (it) await copyItem(it);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [recording, modal, settingsOpen, colorPickerOpen, selectedIndex, visible]);
+
   return (
-    <div className="cv-root" style={rootStyle}>
-      <div className="cv-header">
+    <div className="cv-shell">
+<div className="cv-root" style={rootStyle}>
+
+        <div className="cv-header">
         <div>
-          <div className="cv-title">{t("title")}</div>
-          <div className="cv-subtitle">
-            Search <span className="cv-kbd">⌘K</span> • Open <span className="cv-kbd">{shortcutDraft}</span>
+          <div className="cv-titlebar-top">
+            <div className="cv-traffic-top cv-nodrag">
+              <button className="cv-dot red" aria-label="Close" onClick={() => window.clipvault.hidePopup()}>
+                ×
+              </button>
+              <button className="cv-dot yellow" aria-label="Minimize" onClick={() => window.clipvault.minimizePopup()}>
+                –
+              </button>
+              {/* <button
+                className="cv-dot green"
+                aria-label="Report"
+                onClick={() => {
+                  // TODO: report/feedback action
+                }}
+              >
+                +
+              </button> */}
+            </div>
+
+            <div className="cv-title-center">
+              <div className="cv-title">ClipVault</div>
+              <div className="cv-subtitle">
+                Search <span className="cv-kbd">⌘K</span>Open <span className="cv-kbd">{shortcutDraft}</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -631,6 +789,8 @@ export default function App() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("searchPh")}
           spellCheck={false}
+          onFocus={() => setIsTypingSearch(true)}
+          onBlur={() => setIsTypingSearch(false)}
         />
       </div>
 
@@ -638,7 +798,7 @@ export default function App() {
         <div className="cv-panel cv-nodrag">
           <div className="cv-panel-title">{t("settings")}</div>
 
-          {/* ===== Shortcut ===== */}
+          {/* Shortcut */}
           <div className="cv-section">
             <div className="cv-section-title">{t("shortcut")}</div>
 
@@ -663,10 +823,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* ===== Language ===== */}
+          {/* Language */}
           <div className="cv-section">
             <div className="cv-section-title">{t("language")}</div>
-
             <div className="cv-row">
               <select className="cv-input cv-nodrag" value={lang} onChange={(e) => onChangeLang(e.target.value as Lang)}>
                 <option value="en">English</option>
@@ -675,7 +834,76 @@ export default function App() {
             </div>
           </div>
 
-          {/* ===== Theme ===== */}
+          {/* Behavior */}
+          <div className="cv-section">
+            <div className="cv-section-title">{t("behavior")}</div>
+
+            <div className="cv-row">
+              <div className="cv-label">{t("closeOnCopy")}</div>
+              <input
+                className="cv-nodrag"
+                type="checkbox"
+                checked={closeOnCopy}
+                onChange={async (e) => {
+                  const v = e.target.checked;
+                  setCloseOnCopy(v);
+                  await persistSettings({ closeOnCopy: v });
+                }}
+              />
+            </div>
+
+            <div className="cv-row">
+              <div className="cv-label">{t("closeDelay")}</div>
+              <input
+                className="cv-input cv-nodrag"
+                type="number"
+                min={0}
+                max={5000}
+                value={closeOnCopyDelayMs}
+                onChange={async (e) => {
+                  const v = Math.max(0, Math.min(5000, Number(e.target.value || 0)));
+                  setCloseOnCopyDelayMs(v);
+                  await persistSettings({ closeOnCopyDelayMs: v });
+                }}
+              />
+            </div>
+
+            <div className="cv-row">
+              <div className="cv-label">{t("closeOnBlur")}</div>
+              <input
+                className="cv-nodrag"
+                type="checkbox"
+                checked={closeOnBlur}
+                onChange={async (e) => {
+                  const v = e.target.checked;
+                  setCloseOnBlur(v);
+                  await persistSettings({ closeOnBlur: v });
+                }}
+              />
+            </div>
+          </div>
+
+          {/* System */}
+          <div className="cv-section">
+            <div className="cv-section-title">{t("system")}</div>
+
+            <div className="cv-row">
+              <div className="cv-label">{t("startAtLogin")}</div>
+              <input
+                className="cv-nodrag"
+                type="checkbox"
+                checked={startAtLogin}
+                onChange={async (e) => {
+                  const v = e.target.checked;
+                  setStartAtLogin(v);
+                  await window.clipvault.setStartAtLogin(v);
+                  await persistSettings({ startAtLogin: v });
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Theme */}
           <div className="cv-section">
             <div className="cv-section-title">{t("theme")}</div>
             <div className="cv-muted" style={{ marginBottom: 6 }}>
@@ -683,32 +911,56 @@ export default function App() {
             </div>
 
             <div className="cv-grid">
-              <ColorRowHex label={t("accent")} value={theme.accent} onChange={(v) => saveTheme({ ...theme, accent: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("danger")} value={theme.danger} onChange={(v) => saveTheme({ ...theme, danger: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("background")} value={theme.bg} onChange={(v) => saveTheme({ ...theme, bg: v })} onPickerOpenChange={setColorPickerOpen} />
+              {/* <ColorRowHex
+                label={t("accent")}
+                value={theme.accent}
+                onChange={(v) => saveTheme({ ...theme, accent: v })}
+                onPickerOpenChange={setColorPickerOpen}
+              /> */}
+              <ColorRowHex
+                label={t("danger")}
+                value={theme.danger}
+                onChange={(v) => saveTheme({ ...theme, danger: v })}
+                onPickerOpenChange={setColorPickerOpen}
+              />
+              <ColorRowHex
+  label={t("background")}
+  value={theme.bg}
+  onChange={(v) => saveTheme({ ...theme, bg: v })}
+  onPickerOpenChange={setColorPickerOpen}
+/>
             </div>
           </div>
 
-          {/* ===== Item Cards ===== */}
+          {/* Item Cards */}
           <div className="cv-section">
             <div className="cv-section-title">Item Cards</div>
 
             <div className="cv-grid">
-              <ColorRowHex label={t("itemBorder")} value={theme.itemBorder} onChange={(v) => saveTheme({ ...theme, itemBorder: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("itemBg")} value={theme.itemBg} onChange={(v) => saveTheme({ ...theme, itemBg: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("itemText")} value={theme.itemText} onChange={(v) => saveTheme({ ...theme, itemText: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("itemMuted")} value={theme.itemMuted} onChange={(v) => saveTheme({ ...theme, itemMuted: v })} onPickerOpenChange={setColorPickerOpen} />
-            </div>
-          </div>
-
-          {/* ===== Controls ===== */}
-          <div className="cv-section">
-            <div className="cv-section-title">Controls</div>
-
-            <div className="cv-grid">
-              <ColorRowHex label={t("controlBg")} value={theme.controlBg} onChange={(v) => saveTheme({ ...theme, controlBg: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("controlBorder")} value={theme.controlBorder} onChange={(v) => saveTheme({ ...theme, controlBorder: v })} onPickerOpenChange={setColorPickerOpen} />
-              <ColorRowHex label={t("controlText")} value={theme.controlText} onChange={(v) => saveTheme({ ...theme, controlText: v })} onPickerOpenChange={setColorPickerOpen} />
+              <ColorRowHex
+                label={t("itemBorder")}
+                value={theme.itemBorder}
+                onChange={(v) => saveTheme({ ...theme, itemBorder: v })}
+                onPickerOpenChange={setColorPickerOpen}
+              />
+              <ColorRowHex
+                label={t("itemBg")}
+                value={theme.itemBg}
+                onChange={(v) => saveTheme({ ...theme, itemBg: v })}
+                onPickerOpenChange={setColorPickerOpen}
+              />
+              <ColorRowHex
+                label={t("itemText")}
+                value={theme.itemText}
+                onChange={(v) => saveTheme({ ...theme, itemText: v })}
+                onPickerOpenChange={setColorPickerOpen}
+              />
+              <ColorRowHex
+                label={t("itemMuted")}
+                value={theme.itemMuted}
+                onChange={(v) => saveTheme({ ...theme, itemMuted: v })}
+                onPickerOpenChange={setColorPickerOpen}
+              />
             </div>
           </div>
 
@@ -761,6 +1013,7 @@ export default function App() {
                     </div>
 
                     {item.pinned ? <span className="cv-badge">{t("pinned")}</span> : null}
+
                     {(item.tags ?? []).map((tg) => (
                       <span key={tg} className="cv-tag">
                         {tg}
@@ -769,29 +1022,71 @@ export default function App() {
                   </div>
 
                   <div className="cv-meta-right cv-nodrag">
-                    <button className="cv-icon cv-nodrag" onClick={() => copyItem(item)}>
+                    <button
+                      className="cv-icon cv-nodrag"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await copyItem(item);
+                      }}
+                    >
                       {t("copy")}
                     </button>
 
-                    <button className="cv-icon cv-nodrag" onClick={() => onTogglePin(item)}>
+                    <button
+                      className="cv-icon cv-nodrag"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTogglePin(item);
+                      }}
+                    >
                       {item.pinned ? t("unpin") : t("pin")}
                     </button>
 
-                    <button className="cv-icon cv-nodrag" onClick={() => openTagsModal(item)}>
+                    <button
+                      className="cv-icon cv-nodrag"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openTagsModal(item);
+                      }}
+                    >
                       {t("tags")}
                     </button>
 
                     {item.kind === "text" ? (
-                      <button className="cv-icon cv-nodrag" onClick={() => openEditTextModal(item)}>
+                      <button
+                        className="cv-icon cv-nodrag"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditTextModal(item);
+                        }}
+                      >
                         {t("edit")}
                       </button>
                     ) : (
-                      <button className="cv-icon cv-nodrag" onClick={() => openRenameImageModal(item)}>
+                      <button
+                        className="cv-icon cv-nodrag"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openRenameImageModal(item);
+                        }}
+                      >
                         {t("rename")}
                       </button>
                     )}
 
-                    <button className="cv-icon danger cv-nodrag" onClick={() => onDelete(item)}>
+                    <button
+                      className="cv-icon danger cv-nodrag"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDelete(item);
+                      }}
+                    >
                       {t("delete")}
                     </button>
                   </div>
@@ -809,7 +1104,6 @@ export default function App() {
 
       {toast && <div className="cv-toast">{toast}</div>}
 
-      {/* ---------- Modals ---------- */}
       {modal !== "none" && (
         <div className="cv-modal-backdrop cv-nodrag" onMouseDown={closeModal}>
           <div className="cv-modal cv-nodrag" onMouseDown={(e) => e.stopPropagation()}>
@@ -843,11 +1137,16 @@ export default function App() {
             {modal === "editText" && (
               <>
                 <textarea
-                  className="cv-input cv-nodrag"
-                  style={{ height: 140, resize: "none" }}
-                  value={editDraft}
-                  onChange={(e) => setEditDraft(e.target.value)}
-                  autoFocus
+                   className="cv-input cv-nodrag"
+  style={{
+    minHeight: 140,
+    height: 140,         // initial height
+    resize: "vertical",  // user can resize up/down
+    overflow: "auto",
+  }}
+  value={editDraft}
+  onChange={(e) => setEditDraft(e.target.value)}
+  autoFocus
                 />
                 <div className="cv-modal-actions">
                   <button className="cv-btn cv-nodrag" onClick={saveEditText}>
@@ -882,6 +1181,10 @@ export default function App() {
           </div>
         </div>
       )}
+        
+      </div>
+    
     </div>
+    
   );
 }
