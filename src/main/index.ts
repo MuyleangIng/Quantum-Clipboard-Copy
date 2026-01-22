@@ -56,10 +56,13 @@ const DEFAULT_THEME: Theme = {
   muted: "rgba(160, 175, 195, 0.9)",
   danger: "#ff5a5a",
   accent: "#5aa0ff",
+
   itemBorder: "#2A2F3A",
   itemBg: "#151922",
+
   controlBg: "#1B2130",
   controlBorder: "#2A2F3A",
+
   itemText: "#EBF2FB",
   itemMuted: "#A0AFC3",
   controlText: "#EBF2FB",
@@ -227,9 +230,8 @@ function getHistory(query: string): ClipItem[] {
 function insertClipText(text: string) {
   const now = Date.now();
   const id = randId();
-  db.prepare(
-    "INSERT INTO clips(id, kind, text, createdAt, pinned, tagsJson) VALUES(?,?,?,?,0,'[]')"
-  ).run(id, "text", text, now);
+  db.prepare("INSERT INTO clips(id, kind, text, createdAt, pinned, tagsJson) VALUES(?,?,?,?,0,'[]')")
+    .run(id, "text", text, now);
 }
 
 function insertClipImage(imageDataUrl: string, imageName?: string) {
@@ -239,6 +241,15 @@ function insertClipImage(imageDataUrl: string, imageName?: string) {
     "INSERT INTO clips(id, kind, imageDataUrl, imageName, createdAt, pinned, tagsJson) VALUES(?,?,?,?,?,0,'[]')"
   ).run(id, "image", imageDataUrl, imageName ?? "", now);
 }
+
+// -------------------- interaction locks --------------------
+const interaction = {
+  isSettingsOpen: false,
+  isModalOpen: false,
+  isPickingColor: false,
+  isRecordingShortcut: false,
+  isTypingSearch: false,
+};
 
 // -------------------- window + tray --------------------
 function createWindow() {
@@ -272,9 +283,10 @@ function createWindow() {
 
   win.on("blur", () => {
     if (!app.isPackaged) return;
-    const s = getAppSettings();
 
+    const s = getAppSettings();
     if (!s.closeOnBlur) return;
+
     if (
       interaction.isPickingColor ||
       interaction.isTypingSearch ||
@@ -304,35 +316,81 @@ function showPopupNearCursor() {
   win.show();
   win.focus();
 
-  // ✅ match preload/renderer: popupOpened
   win.webContents.send("popupOpened");
 }
 
-function createTray() {
-  const iconPath = path.join(app.getAppPath(), "trayTemplate.png");
-  tray = new Tray(iconPath);
+// ---- Start at login ----
+function applyStartAtLoginFromSettings() {
+  try {
+    const s = getAppSettings();
+    const want = !!s.startAtLogin;
 
+    app.setLoginItemSettings({
+      openAtLogin: want,
+      path: process.execPath, // important for Windows
+      args: [],
+    });
+
+    const actual = app.getLoginItemSettings().openAtLogin;
+    setSetting("startAtLogin", String(!!actual));
+    notifySettingsUpdated();
+  } catch (err) {
+    console.error("applyStartAtLoginFromSettings failed", err);
+  }
+}
+function getResourcePath(...p: string[]) {
+  // Packaged resources live under process.resourcesPath
+  return app.isPackaged
+    ? path.join(process.resourcesPath, ...p)
+    : path.join(app.getAppPath(), ...p);
+}
+
+// ---- Tray (works on macOS + Windows) ----
+function createTray() {
+
+  const trayIconPath = getResourcePath("trayTemplate.png");
+  tray = new Tray(trayIconPath);
   tray.setToolTip("ClipVault");
 
-  const menu = Menu.buildFromTemplate([
-    { label: "Open ClipVault", click: () => showPopupNearCursor() },
-    { type: "separator" },
-    { label: `Version ${app.getVersion()}`, enabled: false },
-    {
-      label: "Check for Updates…",
-      click: async () => {
-        dialog.showMessageBox({
-          type: "info",
-          title: "Updates",
-          message: "Auto-update is not configured yet.",
-        });
-      },
-    },
-    { type: "separator" },
-    { label: "Quit", role: "quit" },
-  ]);
+  const buildMenu = () => {
+    const checked = app.getLoginItemSettings().openAtLogin;
 
-  tray.setContextMenu(menu);
+    return Menu.buildFromTemplate([
+      { label: "Open ClipVault", click: () => showPopupNearCursor() },
+      { type: "separator" },
+      {
+        label: "Start at Login",
+        type: "checkbox",
+        checked,
+        click: (item) => {
+          app.setLoginItemSettings({
+            openAtLogin: item.checked,
+            path: process.execPath,
+            args: [],
+          });
+          setSetting("startAtLogin", String(item.checked));
+          notifySettingsUpdated();
+          tray?.setContextMenu(buildMenu());
+        },
+      },
+      { type: "separator" },
+      { label: `Version ${app.getVersion()}`, enabled: false },
+      {
+        label: "Check for Updates…",
+        click: async () => {
+          dialog.showMessageBox({
+            type: "info",
+            title: "Updates",
+            message: "Auto-update is not configured yet.",
+          });
+        },
+      },
+      { type: "separator" },
+      { label: "Quit", click: () => app.quit() },
+    ]);
+  };
+
+  tray.setContextMenu(buildMenu());
   tray.on("click", () => showPopupNearCursor());
 }
 
@@ -352,24 +410,14 @@ function setGlobalShortcut(accelRaw: string) {
   return { ok: true as const };
 }
 
-// -------------------- interaction locks --------------------
-const interaction = {
-  isSettingsOpen: false,
-  isModalOpen: false,
-  isPickingColor: false,
-  isRecordingShortcut: false,
-  isTypingSearch: false,
-};
-
 // -------------------- clipboard polling --------------------
 let lastText = "";
 let lastImageHash = "";
 
-// create a stable signature for images
+// stable signature for images
 function imageHash(img: Electron.NativeImage) {
   try {
     const buf = img.toPNG();
-    // small hash (length + first bytes)
     const head = buf.subarray(0, Math.min(64, buf.length)).toString("hex");
     return `${buf.length}:${head}`;
   } catch {
@@ -380,7 +428,7 @@ function imageHash(img: Electron.NativeImage) {
 function pollClipboardStart() {
   setInterval(() => {
     try {
-      // ---- text
+      // text
       const txt = clipboard.readText() || "";
       const trimmed = txt.trim();
       if (trimmed && trimmed !== lastText) {
@@ -390,7 +438,7 @@ function pollClipboardStart() {
         return;
       }
 
-      // ---- image
+      // image
       const img = clipboard.readImage();
       if (!img.isEmpty()) {
         const h = imageHash(img);
@@ -413,7 +461,6 @@ function setupIPC() {
     // optional
   });
 
-  // window controls
   ipcMain.handle("showPopup", async () => {
     showPopupNearCursor();
     return { ok: true };
@@ -429,16 +476,12 @@ function setupIPC() {
     return { ok: true };
   });
 
-  // interaction state from renderer
   ipcMain.handle("setInteractionState", async (_e, partial: Partial<typeof interaction>) => {
     Object.assign(interaction, partial || {});
     return { ok: true };
   });
 
-  // settings
-  ipcMain.handle("getSettings", async () => {
-    return getAppSettings();
-  });
+  ipcMain.handle("getSettings", async () => getAppSettings());
 
   ipcMain.handle("setSettings", async (_e, partial: Partial<AppSettings>) => {
     savePartialSettings(partial || {});
@@ -446,7 +489,6 @@ function setupIPC() {
     return { ok: true };
   });
 
-  // shortcut
   ipcMain.handle("setPopupShortcut", async (_e, accelerator: string) => {
     const res = setGlobalShortcut(accelerator);
     if (!res.ok) return res;
@@ -458,67 +500,91 @@ function setupIPC() {
 
   // start at login
   ipcMain.handle("getStartAtLogin", async () => {
-    try {
-      const v = app.getLoginItemSettings().openAtLogin;
-      return { ok: true, openAtLogin: v };
-    } catch (err: any) {
-      return { ok: false, reason: err?.message ?? String(err) };
-    }
+    return { ok: true, openAtLogin: app.getLoginItemSettings().openAtLogin };
   });
 
   ipcMain.handle("setStartAtLogin", async (_e, openAtLogin: boolean) => {
     try {
-      app.setLoginItemSettings({ openAtLogin: !!openAtLogin });
+      app.setLoginItemSettings({
+        openAtLogin: !!openAtLogin,
+        path: process.execPath,
+        args: [],
+      });
+
       setSetting("startAtLogin", String(!!openAtLogin));
-      const v = app.getLoginItemSettings().openAtLogin;
+      const actual = app.getLoginItemSettings().openAtLogin;
+
       notifySettingsUpdated();
-      return { ok: true, openAtLogin: v };
+      tray?.setContextMenu(
+        Menu.buildFromTemplate([
+          { label: "Open ClipVault", click: () => showPopupNearCursor() },
+          { type: "separator" },
+          {
+            label: "Start at Login",
+            type: "checkbox",
+            checked: actual,
+            click: (item) => {
+              app.setLoginItemSettings({
+                openAtLogin: item.checked,
+                path: process.execPath,
+                args: [],
+              });
+              setSetting("startAtLogin", String(item.checked));
+              notifySettingsUpdated();
+            },
+          },
+          { type: "separator" },
+          { label: `Version ${app.getVersion()}`, enabled: false },
+          { type: "separator" },
+          { label: "Quit", click: () => app.quit() },
+        ])
+      );
+
+      return { ok: true, openAtLogin: actual };
     } catch (err: any) {
       return { ok: false, reason: err?.message ?? String(err) };
     }
   });
 
   // history
-  ipcMain.handle("getHistory", async (_e, query: string) => {
-    return getHistory(query ?? "");
-  });
+  ipcMain.handle("getHistory", async (_e, query: string) => getHistory(query ?? ""));
 
-  // clipboard write (renderer copy button)
-  ipcMain.handle("setClipboard", async (_e, payload: { kind: ClipKind; text?: string; imageDataUrl?: string }) => {
-    try {
-      if (payload.kind === "text") {
-        clipboard.writeText(payload.text ?? "");
+  // clipboard write
+  ipcMain.handle(
+    "setClipboard",
+    async (_e, payload: { kind: ClipKind; text?: string; imageDataUrl?: string }) => {
+      try {
+        if (payload.kind === "text") {
+          clipboard.writeText(payload.text ?? "");
+          return { ok: true };
+        }
+
+        const d = payload.imageDataUrl ?? "";
+        if (!d.startsWith("data:image/")) return { ok: false, reason: "invalid image" };
+
+        const img = nativeImage.createFromDataURL(d);
+        if (img.isEmpty()) return { ok: false, reason: "empty image" };
+
+        clipboard.writeImage(img);
         return { ok: true };
+      } catch (err: any) {
+        return { ok: false, reason: err?.message ?? String(err) };
       }
-
-      const d = payload.imageDataUrl ?? "";
-      if (!d.startsWith("data:image/")) return { ok: false, reason: "invalid image" };
-
-      const img = nativeImage.createFromDataURL(d);
-      if (img.isEmpty()) return { ok: false, reason: "empty image" };
-
-      clipboard.writeImage(img);
-      return { ok: true };
-    } catch (err: any) {
-      return { ok: false, reason: err?.message ?? String(err) };
     }
-  });
+  );
 
-  // delete
   ipcMain.handle("deleteClip", async (_e, id: string) => {
     db.prepare("DELETE FROM clips WHERE id=?").run(id);
     notifyHistoryUpdated();
     return { ok: true };
   });
 
-  // clear all
   ipcMain.handle("clearAll", async () => {
     db.prepare("DELETE FROM clips").run();
     notifyHistoryUpdated();
     return { ok: true };
   });
 
-  // pin
   ipcMain.handle("togglePin", async (_e, id: string) => {
     const r = db.prepare("SELECT pinned FROM clips WHERE id=?").get(id) as { pinned: number } | undefined;
     const next = r?.pinned ? 0 : 1;
@@ -527,7 +593,6 @@ function setupIPC() {
     return { ok: true };
   });
 
-  // tags: ✅ match renderer signature (id, tags)
   ipcMain.handle("setTags", async (_e, id: string, tags: string[]) => {
     const safeTags = Array.isArray(tags) ? tags : [];
     db.prepare("UPDATE clips SET tagsJson=?, updatedAt=? WHERE id=?")
@@ -536,7 +601,6 @@ function setupIPC() {
     return { ok: true };
   });
 
-  // edit text: ✅ match renderer signature (id, text)
   ipcMain.handle("updateClipText", async (_e, id: string, text: string) => {
     const t = (text ?? "").trim();
     db.prepare("UPDATE clips SET text=?, updatedAt=? WHERE id=? AND kind='text'")
@@ -545,7 +609,6 @@ function setupIPC() {
     return { ok: true };
   });
 
-  // rename image: ✅ match renderer signature (id, name)
   ipcMain.handle("renameClip", async (_e, id: string, name: string) => {
     const n = (name ?? "").trim();
     db.prepare("UPDATE clips SET imageName=?, updatedAt=? WHERE id=? AND kind='image'")
@@ -558,12 +621,16 @@ function setupIPC() {
 // -------------------- lifecycle --------------------
 app.whenReady().then(() => {
   dbInit();
+
+  // ✅ Apply "Start at login" immediately at launch
+  applyStartAtLoginFromSettings();
+
   createWindow();
   setupIPC();
 
-  // start polling so Cmd+C outside app will show items
   pollClipboardStart();
 
+  // shortcuts
   const s = getAppSettings();
   const reg = setGlobalShortcut(s.popupShortcut);
   if (!reg.ok) {
@@ -571,8 +638,16 @@ app.whenReady().then(() => {
     setSetting("popupShortcut", "CommandOrControl+Shift+V");
   }
 
-  if (process.platform === "darwin" && app.isPackaged) {
-    app.dock.hide();
+  // tray behavior
+  if (process.platform === "darwin") {
+    // background app
+    try {
+      app.dock.hide();
+    } catch {
+      // ignore
+    }
+    createTray();
+  } else if (process.platform === "win32") {
     createTray();
   }
 
